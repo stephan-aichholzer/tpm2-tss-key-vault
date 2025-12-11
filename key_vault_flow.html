@@ -95,27 +95,17 @@
     <div class="diagram-container">
         <pre class="mermaid">
 flowchart TD
-    subgraph MAIN["main()"]
-        A[Application Start] --> B[harden_process]
-
-        subgraph HARDEN["Process Hardening"]
-            B --> C["prctl(PR_SET_DUMPABLE, 0)"]
-            C --> D["prctl(PR_SET_PTRACER, 0)"]
-            D --> E["mlockall(MCL_CURRENT | MCL_FUTURE)"]
-            E --> F["setrlimit(RLIMIT_CORE, 0)"]
-        end
-
-        F --> G[Create KeyVault]
-
-        subgraph INIT["KeyVault::Impl::init()"]
-            G --> H["OSSL_PROVIDER_load('tpm2')"]
-            H --> I["OSSL_PROVIDER_load('default')"]
-            I --> J["OSSL_STORE_open('handle:0x81010002')"]
-            J --> K[Load TPM key reference]
-        end
-
-        K --> L[KeyVault Ready]
-    end
+    A["Application Start"] --> B["harden_process()"]
+    B --> C["prctl(PR_SET_DUMPABLE, 0)"]
+    C --> D["prctl(PR_SET_PTRACER, 0)"]
+    D --> E["mlockall(MCL_CURRENT | MCL_FUTURE)"]
+    E --> F["setrlimit(RLIMIT_CORE, 0)"]
+    F --> G["KeyVault vault(TPM_HANDLE, pubkey_path)"]
+    G --> H["OSSL_PROVIDER_load tpm2"]
+    H --> I["OSSL_PROVIDER_load default"]
+    I --> J["OSSL_STORE_open handle:0x81010002"]
+    J --> K["Load TPM key reference"]
+    K --> L["KeyVault Ready"]
 
     style A fill:#4CAF50,color:#fff
     style L fill:#4CAF50,color:#fff
@@ -123,6 +113,9 @@ flowchart TD
     style D fill:#ff9800,color:#fff
     style E fill:#ff9800,color:#fff
     style F fill:#ff9800,color:#fff
+    style H fill:#2196F3,color:#fff
+    style I fill:#2196F3,color:#fff
+    style J fill:#2196F3,color:#fff
         </pre>
     </div>
 
@@ -392,38 +385,26 @@ classDiagram
 
     <div class="diagram-container">
         <pre class="mermaid">
-flowchart TB
-    subgraph PROTECTED["PROTECTED - Green"]
-        direction TB
-        P1["Disk Cloning"]
-        P2["Database Theft"]
-        P3["Device Theft"]
-        P4["Core Dump Analysis"]
-        P5["Swap File Reading"]
-        P6["ptrace from other users"]
-        P7["proc mem reading"]
-    end
-
-    subgraph HARDENED["HARDENED - High Bar - Yellow"]
-        direction TB
-        H1["Same-user debugging"]
-        H2["GDB attach"]
-    end
-
-    subgraph VULNERABLE["REMAINING RISK - Red"]
-        direction TB
-        V1["Root + CAP_SYS_PTRACE during operation"]
-        V2["Kernel module memory access"]
-        V3["Physical TPM attack"]
-    end
-
-    subgraph MITIGATIONS["Applied Mitigations"]
+flowchart LR
+    subgraph MIT["Mitigations"]
         M1["TPM encryption"]
         M2["PR_SET_DUMPABLE=0"]
         M3["mlock/mlockall"]
         M4["PR_SET_PTRACER"]
         M5["SecureBuffer wipe"]
-        M6["Minimal time window"]
+    end
+
+    subgraph THREATS["Threat Coverage"]
+        P1["Disk Cloning ✓"]
+        P2["Database Theft ✓"]
+        P3["Device Theft ✓"]
+        P4["Core Dump ✓"]
+        P5["Swap Exposure ✓"]
+        P6["ptrace attach ✓"]
+        P7["proc/mem read ✓"]
+        H1["Same-user debug ⚠"]
+        V1["Root + CAP_SYS_PTRACE ✗"]
+        V2["Kernel memory access ✗"]
     end
 
     M1 --> P1
@@ -434,9 +415,7 @@ flowchart TB
     M3 --> P5
     M4 --> P6
     M2 --> H1
-    M2 --> H2
     M5 --> H1
-    M6 --> V1
 
     style P1 fill:#28a745,color:#fff
     style P2 fill:#28a745,color:#fff
@@ -446,10 +425,8 @@ flowchart TB
     style P6 fill:#28a745,color:#fff
     style P7 fill:#28a745,color:#fff
     style H1 fill:#ffc107,color:#000
-    style H2 fill:#ffc107,color:#000
     style V1 fill:#dc3545,color:#fff
     style V2 fill:#dc3545,color:#fff
-    style V3 fill:#dc3545,color:#fff
         </pre>
     </div>
 
@@ -462,49 +439,46 @@ flowchart TB
 
     <div class="diagram-container">
         <pre class="mermaid">
-flowchart TB
-    subgraph FACTORY["Factory Provisioning (init.sh)"]
-        F1[Run init.sh] --> F2[tpm2_createprimary]
-        F2 --> F3[tpm2_create RSA key]
-        F3 --> F4[tpm2_load]
-        F4 --> F5[tpm2_evictcontrol 0x81010002]
-        F5 --> F6[tpm2_readpublic → PEM]
+flowchart TD
+    subgraph FACTORY["1. Factory Provisioning - init.sh"]
+        F1["./init.sh"] --> F2["tpm2_createprimary"]
+        F2 --> F3["tpm2_create RSA-2048"]
+        F3 --> F4["tpm2_load"]
+        F4 --> F5["tpm2_evictcontrol 0x81010002"]
+        F5 --> F6["tpm2_readpublic → keys/tpm_rsa_pub.pem"]
     end
 
-    subgraph UPLOAD["User Key Upload"]
-        U1[User provides PEM + passphrase] --> U2[KeyVault::protect]
-        U2 --> U3[Encrypt passphrase with TPM pubkey]
-        U3 --> U4[Store encrypted blob in DB]
-        U4 --> U5[Store encrypted PEM on disk]
+    subgraph UPLOAD["2. User Key Upload"]
+        U1["User provides encrypted PEM + passphrase"] --> U2["vault.protect(key_id, passphrase)"]
+        U2 --> U3["RSA encrypt with TPM public key"]
+        U3 --> U4["Store ProtectedPassphrase in DB"]
     end
 
-    subgraph RUNTIME["Runtime Operation"]
-        R1[Application starts] --> R2[harden_process]
-        R2 --> R3[KeyVault init]
-        R3 --> R4[Load protected passphrase from DB]
-        R4 --> R5[sign_with_protected_key]
-
-        subgraph CRITICAL["Critical Section (~ms)"]
-            R5 --> R6[TPM decrypts passphrase]
-            R6 --> R7[Load PEM with passphrase]
-            R7 --> R8[Wipe passphrase]
-            R8 --> R9[Sign data]
-            R9 --> R10[Free key]
-        end
-
-        R10 --> R11[Return signature]
+    subgraph RUNTIME["3. Runtime Sign Operation"]
+        R1["harden_process()"] --> R2["KeyVault init"]
+        R2 --> R3["Load ProtectedPassphrase from DB"]
+        R3 --> R4["sign_with_protected_key()"]
+        R4 --> R5["TPM decrypts passphrase"]
+        R5 --> R6["Load encrypted PEM"]
+        R6 --> R7["Wipe passphrase"]
+        R7 --> R8["Sign data"]
+        R8 --> R9["EVP_PKEY_free()"]
+        R9 --> R10["Return signature"]
     end
 
-    FACTORY --> UPLOAD
-    UPLOAD --> RUNTIME
+    F6 --> U1
+    U4 --> R3
 
     style F1 fill:#007acc,color:#fff
     style F6 fill:#28a745,color:#fff
     style U1 fill:#007acc,color:#fff
-    style U5 fill:#28a745,color:#fff
-    style R1 fill:#007acc,color:#fff
-    style R11 fill:#28a745,color:#fff
-    style CRITICAL fill:#fff3cd
+    style U4 fill:#28a745,color:#fff
+    style R1 fill:#ff9800,color:#fff
+    style R10 fill:#28a745,color:#fff
+    style R5 fill:#fff3cd,color:#000
+    style R6 fill:#fff3cd,color:#000
+    style R7 fill:#fff3cd,color:#000
+    style R8 fill:#fff3cd,color:#000
         </pre>
     </div>
 
@@ -524,10 +498,14 @@ flowchart TB
             flowchart: {
                 useMaxWidth: true,
                 htmlLabels: true,
-                curve: 'basis'
+                curve: 'basis',
+                nodeSpacing: 30,
+                rankSpacing: 50,
+                padding: 15
             },
-            gantt: {
-                useMaxWidth: true
+            themeVariables: {
+                fontSize: '16px',
+                fontFamily: 'arial'
             }
         });
     </script>
