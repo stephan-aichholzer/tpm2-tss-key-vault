@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TPM2 RSA Key Operations - Sequence Diagrams</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #007acc;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #007acc;
+            margin-top: 40px;
+        }
+        .diagram-container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .description {
+            background: #e7f3ff;
+            border-left: 4px solid #007acc;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .security-note {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .security-note strong {
+            color: #856404;
+        }
+        code {
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        .mermaid {
+            display: flex;
+            justify-content: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>TPM2 RSA Key Operations</h1>
+    <p>Interactive sequence diagrams showing how TPM2 manages RSA keys and performs cryptographic operations.</p>
+
+    <!-- Key Provisioning -->
+    <h2>1. Key Provisioning (Factory Setup)</h2>
+
+    <div class="description">
+        <strong>Purpose:</strong> Create and persist an RSA key inside the TPM. This is done once during device provisioning.
+        The private key is generated inside the TPM and never leaves the silicon.
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant Admin as Factory Admin
+    participant Tools as tpm2-tools
+    participant TPM as TPM2 Chip
+    participant NV as TPM NV Storage
+    participant Disk as Filesystem
+
+    Note over Admin,Disk: Step 1: Create Primary Key (Storage Root)
+    Admin->>Tools: tpm2_createprimary -C o -g sha256 -G rsa
+    Tools->>TPM: CreatePrimary command
+    TPM->>TPM: Derive primary key from internal seed
+    TPM-->>Tools: Primary key handle
+    Tools-->>Disk: Save primary.ctx (temporary handle)
+
+    Note over Admin,Disk: Step 2: Create RSA Child Key
+    Admin->>Tools: tpm2_create -C primary.ctx -G rsa2048
+    Tools->>TPM: Create command with attributes
+    TPM->>TPM: Generate RSA-2048 keypair internally
+    TPM->>TPM: Encrypt private key with primary key
+    TPM-->>Tools: Public + Encrypted private blob
+    Tools-->>Disk: Save rsakey.pub, rsakey.priv
+
+    Note over Admin,Disk: Step 3: Load Key into TPM
+    Admin->>Tools: tpm2_load -C primary.ctx -u pub -r priv
+    Tools->>TPM: Load command
+    TPM->>TPM: Decrypt private blob using primary key
+    TPM-->>Tools: Loaded key handle (temporary)
+    Tools-->>Disk: Save rsakey.ctx
+
+    Note over Admin,Disk: Step 4: Persist Key Permanently
+    Admin->>Tools: tpm2_evictcontrol -C o -c rsakey.ctx 0x81010002
+    Tools->>TPM: EvictControl command
+    TPM->>NV: Store key at handle 0x81010002
+    NV-->>TPM: Confirmed
+    TPM-->>Tools: Persistent handle assigned
+    Tools-->>Admin: Key persisted successfully
+
+    Note over Admin,Disk: Step 5: Export Public Key
+    Admin->>Tools: tpm2_readpublic -c 0x81010002 -f pem
+    Tools->>TPM: ReadPublic command
+    TPM-->>Tools: Public key data
+    Tools-->>Disk: Save tpm_rsa_pub.pem
+
+    Note over Disk: Cleanup: Can delete primary.ctx,<br/>rsakey.pub, rsakey.priv, rsakey.ctx<br/>Only need handle 0x81010002 now
+        </pre>
+    </div>
+
+    <div class="security-note">
+        <strong>Security Note:</strong> The file <code>rsakey.priv</code> contains the private key encrypted by the TPM's primary key.
+        This file is useless on any other device - only THIS specific TPM can decrypt and use it.
+    </div>
+
+    <!-- Signing Operation -->
+    <h2>2. RSA Signing Operation</h2>
+
+    <div class="description">
+        <strong>Purpose:</strong> Sign data using the TPM-resident private key. The signing happens entirely inside the TPM chip.
+        Your application never sees the private key.
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant App as C++ Application
+    participant OpenSSL as OpenSSL 3.x
+    participant Provider as TPM2 Provider
+    participant Driver as /dev/tpmrm0
+    participant TPM as TPM2 Chip
+
+    App->>OpenSSL: Sign request with handle:0x81010002
+    OpenSSL->>Provider: Load key from TPM handle
+    Provider->>Driver: Send TPM2_ReadPublic
+    Driver->>TPM: ReadPublic command
+    TPM-->>Driver: Public key metadata
+    Driver-->>Provider: Key info
+    Provider-->>OpenSSL: EVP_PKEY (references TPM key)
+
+    App->>OpenSSL: EVP_DigestSign(data)
+    OpenSSL->>OpenSSL: Hash data with SHA-256
+    OpenSSL->>Provider: Sign hash
+    Provider->>Driver: Send TPM2_Sign command
+    Driver->>TPM: Sign command + hash
+
+    Note over TPM: Private key used ONLY here<br/>Never leaves silicon
+
+    TPM->>TPM: RSA sign with internal private key
+    TPM-->>Driver: Signature bytes
+    Driver-->>Provider: Signature
+    Provider-->>OpenSSL: Signature
+    OpenSSL-->>App: Return signature
+
+    Note over App: App has signature but<br/>NEVER had private key
+        </pre>
+    </div>
+
+    <!-- Decryption Operation -->
+    <h2>3. RSA Decryption Operation</h2>
+
+    <div class="description">
+        <strong>Purpose:</strong> Decrypt data that was encrypted with the public key. Decryption happens inside the TPM.
+        The plaintext result is returned to your application, but the private key never leaves the chip.
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant Sender as External Sender
+    participant App as C++ Application
+    participant OpenSSL as OpenSSL 3.x
+    participant Provider as TPM2 Provider
+    participant TPM as TPM2 Chip
+
+    Note over Sender,App: Sender encrypts with public key (can be done anywhere)
+    Sender->>Sender: Load tpm_rsa_pub.pem
+    Sender->>Sender: RSA encrypt(secret, public_key)
+    Sender->>App: Send encrypted blob
+
+    Note over App,TPM: App decrypts using TPM
+    App->>OpenSSL: Decrypt request with handle:0x81010002
+    OpenSSL->>Provider: RSA_decrypt operation
+    Provider->>TPM: TPM2_RSA_Decrypt command + ciphertext
+
+    Note over TPM: Private key used ONLY here<br/>Never leaves silicon
+
+    TPM->>TPM: RSA decrypt with internal private key
+    TPM-->>Provider: Plaintext
+    Provider-->>OpenSSL: Plaintext
+    OpenSSL-->>App: Return decrypted data
+
+    Note over App: App has plaintext but<br/>NEVER had private key
+        </pre>
+    </div>
+
+    <!-- Attack Scenario -->
+    <h2>4. Attack Scenario: Why TPM Protects You</h2>
+
+    <div class="description">
+        <strong>Scenario:</strong> An attacker clones your device's storage (SD card, SSD, etc.) and tries to use the key on different hardware.
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant Attacker as Attacker
+    participant Clone as Cloned Disk
+    participant BadTPM as Different TPM
+    participant Files as Stolen Files
+
+    Note over Attacker,Files: Attacker steals/clones device storage
+    Attacker->>Clone: Copy entire disk
+    Clone-->>Files: rsakey.priv, primary.ctx, etc.
+
+    Note over Attacker,BadTPM: Attempt 1: Use encrypted private key file
+    Attacker->>Files: Try to load rsakey.priv
+    Files-->>Attacker: Encrypted blob (useless without TPM)
+    Note over Attacker: FAILED: Cannot decrypt without original TPM
+
+    Note over Attacker,BadTPM: Attempt 2: Try on different TPM
+    Attacker->>BadTPM: tpm2_load with stolen files
+    BadTPM->>BadTPM: Try to decrypt rsakey.priv
+    BadTPM-->>Attacker: ERROR: Decryption failed
+    Note over BadTPM: Different TPM = Different primary key<br/>= Cannot decrypt the private blob
+
+    Note over Attacker,BadTPM: Attempt 3: Access persistent handle
+    Attacker->>BadTPM: Try handle 0x81010002
+    BadTPM-->>Attacker: ERROR: Handle not found
+    Note over BadTPM: Key was persisted in ORIGINAL TPM<br/>Does not exist here
+
+    Note over Attacker: ALL ATTACKS FAILED<br/>Key is bound to original hardware
+        </pre>
+    </div>
+
+    <div class="security-note">
+        <strong>Key Insight:</strong> The TPM's internal seed is unique to each chip and cannot be extracted.
+        All keys derived from it are hardware-bound. Cloning the disk is useless without the physical TPM chip.
+    </div>
+
+    <!-- Key Hierarchy -->
+    <h2>5. TPM Key Hierarchy</h2>
+
+    <div class="description">
+        <strong>Overview:</strong> How keys are organized inside the TPM, from the hardware seed to your application key.
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+flowchart TB
+    subgraph TPM["TPM2 Chip (Silicon)"]
+        Seed["Internal Seed<br/>(Burned in manufacturing)<br/>(NEVER extractable)"]
+
+        subgraph Hierarchies["Trust Hierarchies"]
+            Owner["Owner Hierarchy<br/>(General purpose)"]
+            Endorsement["Endorsement Hierarchy<br/>(Identity/attestation)"]
+            Platform["Platform Hierarchy<br/>(Firmware use)"]
+        end
+
+        Seed --> Owner
+        Seed --> Endorsement
+        Seed --> Platform
+
+        subgraph OwnerKeys["Owner Hierarchy Keys"]
+            Primary["Primary Key<br/>(Storage Root)<br/>Derived from seed"]
+            RSAKey["RSA-2048 Key<br/>Handle: 0x81010002<br/>sign | decrypt"]
+        end
+
+        Owner --> Primary
+        Primary --> RSAKey
+    end
+
+    subgraph External["External (Disk)"]
+        PubKey["tpm_rsa_pub.pem<br/>(Public key - shareable)"]
+        EncPriv["rsakey.priv<br/>(Encrypted by Primary)<br/>(Useless without TPM)"]
+    end
+
+    RSAKey -.->|"export public"| PubKey
+    RSAKey -.->|"encrypted backup"| EncPriv
+
+    style Seed fill:#ff6b6b,stroke:#c0392b,color:#fff
+    style RSAKey fill:#4ecdc4,stroke:#16a085,color:#fff
+    style PubKey fill:#95e1d3,stroke:#1abc9c
+    style EncPriv fill:#f9ca24,stroke:#f39c12
+        </pre>
+    </div>
+
+    <!-- Runtime Usage -->
+    <h2>6. Runtime Application Flow</h2>
+
+    <div class="description">
+        <strong>Purpose:</strong> How your C++ application uses the TPM key at runtime through OpenSSL.
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant App as Your C++ App
+    participant Poco as Poco Framework
+    participant SSL as OpenSSL 3.x
+    participant TPM2 as TPM2 Provider
+    participant HW as TPM Hardware
+
+    Note over App,HW: Application Startup
+    App->>SSL: OSSL_PROVIDER_load("tpm2")
+    SSL->>TPM2: Initialize provider
+    TPM2->>HW: Open /dev/tpmrm0
+    HW-->>TPM2: Connection established
+    TPM2-->>SSL: Provider ready
+    SSL-->>App: Providers loaded
+
+    Note over App,HW: Load TPM Key Reference
+    App->>SSL: OSSL_STORE_open("handle:0x81010002")
+    SSL->>TPM2: Load key from handle
+    TPM2->>HW: TPM2_ReadPublic
+    HW-->>TPM2: Key metadata
+    TPM2-->>SSL: EVP_PKEY (TPM-backed)
+    SSL-->>App: Key handle ready
+
+    Note over App,HW: Use Key for Signing (example)
+    App->>Poco: Sign incoming request
+    Poco->>SSL: EVP_DigestSignInit/Update/Final
+    SSL->>TPM2: Perform signature
+    TPM2->>HW: TPM2_Sign
+    HW->>HW: Sign inside silicon
+    HW-->>TPM2: Signature
+    TPM2-->>SSL: Signature bytes
+    SSL-->>Poco: Signed data
+    Poco-->>App: Return signature
+
+    Note over App: Key never in app memory!<br/>Only signature returned
+        </pre>
+    </div>
+
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            securityLevel: 'loose',
+            sequence: {
+                diagramMarginX: 50,
+                diagramMarginY: 10,
+                actorMargin: 50,
+                width: 150,
+                height: 65,
+                boxMargin: 10,
+                boxTextMargin: 5,
+                noteMargin: 10,
+                messageMargin: 35,
+                mirrorActors: true,
+                useMaxWidth: true
+            },
+            flowchart: {
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis'
+            }
+        });
+    </script>
+</body>
+</html>

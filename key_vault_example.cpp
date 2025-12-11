@@ -1,0 +1,153 @@
+#include <iostream>
+#include <fstream>
+#include "key_vault.h"
+#include "process_hardening.h"
+
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/err.h>
+
+// Helper: Print hex
+void print_hex(const std::string& label, const std::vector<uint8_t>& data) {
+    std::cout << label << " (" << data.size() << " bytes): ";
+    for (size_t i = 0; i < std::min(data.size(), size_t(32)); ++i) {
+        printf("%02x", data[i]);
+    }
+    if (data.size() > 32) std::cout << "...";
+    std::cout << std::endl;
+}
+
+// Helper: Create test encrypted PEM
+void create_test_pem(const std::string& path, const std::string& passphrase) {
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+    EVP_PKEY_keygen_init(ctx);
+    EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048);
+
+    EVP_PKEY* pkey = NULL;
+    EVP_PKEY_keygen(ctx, &pkey);
+    EVP_PKEY_CTX_free(ctx);
+
+    FILE* fp = fopen(path.c_str(), "w");
+    PEM_write_PrivateKey(fp, pkey, EVP_aes_256_cbc(),
+                         (unsigned char*)passphrase.c_str(),
+                         passphrase.size(), NULL, NULL);
+    fclose(fp);
+    EVP_PKEY_free(pkey);
+
+    std::cout << "   Created: " << path << std::endl;
+}
+
+int main() {
+    std::cout << "=== KeyVault Example (Hardened) ===" << std::endl;
+    std::cout << "TPM-protected passphrase storage with process hardening\n" << std::endl;
+
+    // =========================================================================
+    // STEP 0: Harden the process BEFORE any secrets are loaded
+    // =========================================================================
+    std::cout << "0. Applying process hardening..." << std::endl;
+    auto hardening = harden_process();
+    print_hardening_status(hardening);
+    std::cout << std::endl;
+
+    const uint32_t TPM_HANDLE = 0x81010002;
+    const std::string PUBKEY_PATH = "keys/tpm_rsa_pub.pem";
+
+    try {
+        // =====================================================================
+        // STEP 1: Initialize KeyVault
+        // =====================================================================
+        std::cout << "1. Initializing KeyVault with TPM..." << std::endl;
+        KeyVault vault(TPM_HANDLE, PUBKEY_PATH);
+        std::cout << "   OK - TPM key loaded\n" << std::endl;
+
+        // =====================================================================
+        // STEP 2: Simulate user uploading encrypted PEM
+        // =====================================================================
+        std::cout << "2. Simulating user upload..." << std::endl;
+        const std::string USER_PASSPHRASE = "UserSecret!456";
+        const std::string USER_PEM_PATH = "keys/user_key_A.pem";
+        create_test_pem(USER_PEM_PATH, USER_PASSPHRASE);
+        std::cout << "   Passphrase: \"" << USER_PASSPHRASE << "\"\n" << std::endl;
+
+        // =====================================================================
+        // STEP 3: Protect the passphrase using TPM
+        // =====================================================================
+        std::cout << "3. Protecting passphrase with TPM public key..." << std::endl;
+        ProtectedPassphrase protected_pass = vault.protect("user_key_A", USER_PASSPHRASE);
+        print_hex("   Encrypted passphrase", protected_pass.encrypted_data);
+        std::cout << std::endl;
+
+        // =====================================================================
+        // STEP 4: Serialize for storage (database, file, etc.)
+        // =====================================================================
+        std::cout << "4. Serializing for database storage..." << std::endl;
+        std::vector<uint8_t> db_blob = protected_pass.serialize();
+        std::cout << "   Stored " << db_blob.size() << " bytes" << std::endl;
+        std::cout << "   (This blob is useless without THIS specific TPM)\n" << std::endl;
+
+        // =====================================================================
+        // LATER AT RUNTIME...
+        // =====================================================================
+        std::cout << "========================================" << std::endl;
+        std::cout << "=== Runtime: Using protected key ===" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        // Load from "database"
+        std::cout << "5. Loading from storage..." << std::endl;
+        ProtectedPassphrase loaded = ProtectedPassphrase::deserialize(db_blob);
+        std::cout << "   Key ID: " << loaded.key_id << "\n" << std::endl;
+
+        // =====================================================================
+        // STEP 6: Sign using protected key
+        // =====================================================================
+        std::cout << "6. Signing data with protected key..." << std::endl;
+        std::cout << "   Timeline:" << std::endl;
+        std::cout << "   [1] TPM decrypts passphrase (inside TPM silicon)" << std::endl;
+        std::cout << "   [2] Passphrase in SecureBuffer (mlock'd, will be wiped)" << std::endl;
+        std::cout << "   [3] OpenSSL loads PEM using passphrase" << std::endl;
+        std::cout << "   [4] Passphrase wiped from memory" << std::endl;
+        std::cout << "   [5] Sign operation performed" << std::endl;
+        std::cout << "   [6] Private key freed (memory wiped)" << std::endl;
+
+        std::string message = "Important document to sign";
+        std::vector<uint8_t> data(message.begin(), message.end());
+
+        auto signature = vault.sign_with_protected_key(loaded, USER_PEM_PATH, data);
+
+        std::cout << std::endl;
+        if (!signature.empty()) {
+            print_hex("   Signature", signature);
+            std::cout << "   SUCCESS\n" << std::endl;
+        } else {
+            std::cout << "   FAILED\n" << std::endl;
+        }
+
+        // =====================================================================
+        // Summary
+        // =====================================================================
+        std::cout << "========================================" << std::endl;
+        std::cout << "=== Security Summary ===" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        std::cout << "Protected against:" << std::endl;
+        std::cout << "  [x] Disk cloning (passphrase encrypted by TPM)" << std::endl;
+        std::cout << "  [x] Database theft (blob useless without TPM)" << std::endl;
+        std::cout << "  [x] Swap file exposure (mlock)" << std::endl;
+        std::cout << "  [x] Core dump analysis (PR_SET_DUMPABLE=0)" << std::endl;
+        std::cout << "  [x] ptrace from other processes" << std::endl;
+        std::cout << "  [x] /proc/<pid>/mem reading (requires CAP_SYS_PTRACE)" << std::endl;
+        std::cout << std::endl;
+
+        std::cout << "Vulnerable window (unavoidable for user-provided keys):" << std::endl;
+        std::cout << "  [ ] Root with CAP_SYS_PTRACE during key operation (~ms)" << std::endl;
+        std::cout << "  [ ] Kernel-level memory access" << std::endl;
+        std::cout << std::endl;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return 1;
+    }
+
+    std::cout << "=== Done ===" << std::endl;
+    return 0;
+}

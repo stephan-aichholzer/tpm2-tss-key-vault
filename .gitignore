@@ -1,0 +1,29 @@
+# Build directory
+build/
+
+# Compiled objects
+*.o
+*.a
+*.so
+
+# Executables
+tpm_example
+key_vault_example
+
+# TPM temporary files
+*.ctx
+*.pub
+*.priv
+
+# Keys directory (contains generated keys)
+keys/
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS files
+.DS_Store

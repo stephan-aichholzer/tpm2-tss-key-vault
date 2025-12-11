@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KeyVault C++ Implementation Flow</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #007acc;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #007acc;
+            margin-top: 40px;
+        }
+        .diagram-container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow-x: auto;
+        }
+        .description {
+            background: #e7f3ff;
+            border-left: 4px solid #007acc;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .security-note {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .warning-note {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        code {
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        .mermaid {
+            display: flex;
+            justify-content: center;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 15px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 10px;
+            text-align: left;
+        }
+        th {
+            background: #007acc;
+            color: white;
+        }
+        tr:nth-child(even) {
+            background: #f9f9f9;
+        }
+    </style>
+</head>
+<body>
+    <h1>KeyVault C++ Implementation Flow</h1>
+    <p>Visual diagrams showing the C++ implementation of TPM-protected key management.</p>
+
+    <!-- Application Startup -->
+    <h2>1. Application Startup &amp; Initialization</h2>
+
+    <div class="description">
+        <strong>Phase:</strong> Application startup - harden process and initialize TPM connection.
+        <br><strong>Files:</strong> <code>main()</code> in key_vault_example.cpp, process_hardening.cpp, key_vault.cpp
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+flowchart TD
+    subgraph MAIN["main()"]
+        A[Application Start] --> B[harden_process]
+
+        subgraph HARDEN["Process Hardening"]
+            B --> C["prctl(PR_SET_DUMPABLE, 0)"]
+            C --> D["prctl(PR_SET_PTRACER, 0)"]
+            D --> E["mlockall(MCL_CURRENT | MCL_FUTURE)"]
+            E --> F["setrlimit(RLIMIT_CORE, 0)"]
+        end
+
+        F --> G[Create KeyVault]
+
+        subgraph INIT["KeyVault::Impl::init()"]
+            G --> H["OSSL_PROVIDER_load('tpm2')"]
+            H --> I["OSSL_PROVIDER_load('default')"]
+            I --> J["OSSL_STORE_open('handle:0x81010002')"]
+            J --> K[Load TPM key reference]
+        end
+
+        K --> L[KeyVault Ready]
+    end
+
+    style A fill:#4CAF50,color:#fff
+    style L fill:#4CAF50,color:#fff
+    style C fill:#ff9800,color:#fff
+    style D fill:#ff9800,color:#fff
+    style E fill:#ff9800,color:#fff
+    style F fill:#ff9800,color:#fff
+        </pre>
+    </div>
+
+    <div class="security-note">
+        <strong>Security:</strong> Process hardening is applied <em>before</em> any secrets are loaded.
+        This ensures the protections are in place from the start.
+    </div>
+
+    <!-- Passphrase Protection -->
+    <h2>2. Protecting a User Passphrase</h2>
+
+    <div class="description">
+        <strong>Phase:</strong> User uploads encrypted PEM file and provides passphrase.
+        <br><strong>Method:</strong> <code>KeyVault::protect(key_id, passphrase)</code>
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant User
+    participant App as Application
+    participant KV as KeyVault
+    participant SSL as OpenSSL<br/>(default provider)
+    participant FS as Filesystem
+
+    User->>App: Upload PEM + passphrase
+    App->>KV: protect("user_key_A", passphrase)
+
+    Note over KV: Create isolated OpenSSL context<br/>(no TPM provider)
+
+    KV->>KV: OSSL_LIB_CTX_new()
+    KV->>SSL: OSSL_PROVIDER_load(ctx, "default")
+
+    KV->>FS: fopen(pubkey_path)
+    FS-->>KV: FILE*
+    KV->>SSL: PEM_read_PUBKEY()
+    SSL-->>KV: EVP_PKEY* (public key)
+
+    Note over KV,SSL: RSA encrypt passphrase<br/>with TPM public key
+
+    KV->>SSL: EVP_PKEY_encrypt_init()
+    KV->>SSL: EVP_PKEY_CTX_set_rsa_padding(PKCS1)
+    KV->>SSL: EVP_PKEY_encrypt(passphrase)
+    SSL-->>KV: encrypted_blob (256 bytes)
+
+    KV->>KV: Cleanup contexts
+    KV-->>App: ProtectedPassphrase{key_id, encrypted_blob}
+
+    Note over App: Store in database
+
+    App->>App: protected_pass.serialize()
+    App->>FS: Store blob to DB
+
+    Note over User,FS: Passphrase now protected<br/>Original passphrase can be wiped
+        </pre>
+    </div>
+
+    <!-- Key Usage Flow -->
+    <h2>3. Using a Protected Key (Sign Operation)</h2>
+
+    <div class="description">
+        <strong>Phase:</strong> Runtime - sign data using TPM-protected passphrase.
+        <br><strong>Method:</strong> <code>KeyVault::sign_with_protected_key()</code>
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant App as Application
+    participant KV as KeyVault
+    participant TPM as TPM2 Chip
+    participant SB as SecureBuffer
+    participant SSL as OpenSSL
+
+    App->>KV: sign_with_protected_key(protected_pass, pem_path, data)
+
+    rect rgb(255, 240, 240)
+        Note over KV,TPM: VULNERABLE WINDOW BEGINS
+
+        KV->>KV: load_protected_key()
+
+        Note over KV,TPM: Step 1: TPM decrypts passphrase
+
+        KV->>TPM: EVP_PKEY_decrypt(encrypted_blob)
+        TPM->>TPM: RSA decrypt inside silicon
+        TPM-->>KV: plaintext passphrase
+
+        KV->>SB: SecureBuffer(passphrase)
+        Note over SB: Memory mlocked<br/>Cannot be swapped
+
+        Note over KV,SSL: Step 2: Load encrypted PEM
+
+        KV->>SSL: PEM_read_PrivateKey(pem, passphrase)
+        SSL->>SSL: AES-256-CBC decrypt PEM
+        SSL-->>KV: EVP_PKEY* (user private key)
+
+        Note over SB: Step 3: Wipe passphrase immediately
+
+        KV->>SB: ~SecureBuffer()
+        SB->>SB: volatile wipe loop
+        SB->>SB: munlock()
+
+        Note over KV,SSL: Step 4: Sign operation
+
+        KV->>SSL: EVP_DigestSignInit(pkey)
+        KV->>SSL: EVP_DigestSignUpdate(data)
+        KV->>SSL: EVP_DigestSignFinal()
+        SSL-->>KV: signature
+
+        Note over KV,SSL: Step 5: Wipe key
+
+        KV->>SSL: EVP_PKEY_free(pkey)
+
+        Note over KV,TPM: VULNERABLE WINDOW ENDS
+    end
+
+    KV-->>App: signature
+
+    Note over App: Only signature returned<br/>No secrets in scope
+        </pre>
+    </div>
+
+    <div class="warning-note">
+        <strong>Vulnerable Window:</strong> Between passphrase decryption and key wipe (~1-10ms).
+        Mitigated by process hardening but not eliminated for user-provided keys.
+    </div>
+
+    <!-- Memory Layout -->
+    <h2>4. Memory Protection Timeline</h2>
+
+    <div class="description">
+        <strong>Visualization:</strong> What exists in memory at each point in time.
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+gantt
+    title Memory Contents During Key Operation
+    dateFormat X
+    axisFormat %s
+
+    section TPM
+    Root private key (always in TPM)      :active, tpm, 0, 100
+
+    section SecureBuffer
+    Decrypted passphrase (mlocked)        :crit, pass, 10, 40
+
+    section OpenSSL
+    User private key (EVP_PKEY)           :crit, key, 30, 70
+
+    section Application
+    Input data                            :data, 0, 100
+    Output signature                      :sig, 70, 100
+
+    section Vulnerable Window
+    Secrets in RAM                        :crit, vuln, 10, 70
+        </pre>
+    </div>
+
+    <table>
+        <tr>
+            <th>Time</th>
+            <th>Passphrase</th>
+            <th>User Private Key</th>
+            <th>Status</th>
+        </tr>
+        <tr>
+            <td>0-10</td>
+            <td>Encrypted (in DB)</td>
+            <td>Encrypted (in PEM file)</td>
+            <td style="background:#d4edda">SAFE</td>
+        </tr>
+        <tr>
+            <td>10-30</td>
+            <td>Decrypted (SecureBuffer)</td>
+            <td>Encrypted (in PEM file)</td>
+            <td style="background:#fff3cd">PARTIAL</td>
+        </tr>
+        <tr>
+            <td>30-40</td>
+            <td>Decrypted (SecureBuffer)</td>
+            <td>Decrypted (EVP_PKEY)</td>
+            <td style="background:#f8d7da">VULNERABLE</td>
+        </tr>
+        <tr>
+            <td>40-70</td>
+            <td>WIPED</td>
+            <td>Decrypted (EVP_PKEY)</td>
+            <td style="background:#fff3cd">PARTIAL</td>
+        </tr>
+        <tr>
+            <td>70-100</td>
+            <td>WIPED</td>
+            <td>FREED</td>
+            <td style="background:#d4edda">SAFE</td>
+        </tr>
+    </table>
+
+    <!-- Class Diagram -->
+    <h2>5. C++ Class Structure</h2>
+
+    <div class="description">
+        <strong>Overview:</strong> Main classes and their relationships.
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+classDiagram
+    class KeyVault {
+        -Impl* impl_
+        +KeyVault(tpm_handle, pubkey_path)
+        +~KeyVault()
+        +protect(key_id, passphrase) ProtectedPassphrase
+        +load_protected_key(protected_pass, pem_path) EVP_PKEY*
+        +sign_with_protected_key(protected_pass, pem_path, data) vector~uint8_t~
+        +decrypt_with_protected_key(protected_pass, pem_path, ciphertext) vector~uint8_t~
+    }
+
+    class KeyVault_Impl {
+        +uint32_t tpm_handle
+        +string pubkey_path
+        +OSSL_PROVIDER* tpm2_provider
+        +OSSL_PROVIDER* default_provider
+        +EVP_PKEY* tpm_key
+        +init()
+        +encrypt_passphrase(passphrase) vector~uint8_t~
+        +decrypt_passphrase(encrypted) SecureBuffer
+        +load_encrypted_pem(pem_path, passphrase) EVP_PKEY*
+    }
+
+    class SecureBuffer {
+        -uint8_t* data_
+        -size_t size_
+        +SecureBuffer(size)
+        +~SecureBuffer()
+        +data() uint8_t*
+        +size() size_t
+        +wipe()
+    }
+
+    class ProtectedPassphrase {
+        +string key_id
+        +vector~uint8_t~ encrypted_data
+        +serialize() vector~uint8_t~
+        +deserialize(data)$ ProtectedPassphrase
+    }
+
+    class HardeningResult {
+        +bool dumps_disabled
+        +bool ptrace_disabled
+        +bool memory_locked
+        +string error_message
+    }
+
+    KeyVault *-- KeyVault_Impl : pimpl
+    KeyVault_Impl ..> SecureBuffer : creates
+    KeyVault ..> ProtectedPassphrase : uses
+    KeyVault_Impl ..> EVP_PKEY : manages
+
+    note for SecureBuffer "Memory is mlocked\nand securely wiped\non destruction"
+
+    note for KeyVault_Impl "Holds TPM connection\nand OpenSSL providers"
+        </pre>
+    </div>
+
+    <!-- Attack Surface -->
+    <h2>6. Attack Surface Diagram</h2>
+
+    <div class="description">
+        <strong>Overview:</strong> What's protected and what remains vulnerable.
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+flowchart TB
+    subgraph PROTECTED["PROTECTED (Green)"]
+        direction TB
+        P1[Disk Cloning]
+        P2[Database Theft]
+        P3[Device Theft]
+        P4[Core Dump Analysis]
+        P5[Swap File Reading]
+        P6[ptrace from other users]
+        P7[/proc/mem reading]
+    end
+
+    subgraph HARDENED["HARDENED - High Bar (Yellow)"]
+        direction TB
+        H1[Same-user debugging]
+        H2[GDB attach]
+    end
+
+    subgraph VULNERABLE["REMAINING RISK (Red)"]
+        direction TB
+        V1[Root + CAP_SYS_PTRACE<br/>during operation]
+        V2[Kernel module<br/>memory access]
+        V3[Physical TPM attack]
+    end
+
+    subgraph MITIGATIONS["Applied Mitigations"]
+        M1[TPM encryption]
+        M2[PR_SET_DUMPABLE=0]
+        M3[mlock/mlockall]
+        M4[PR_SET_PTRACER]
+        M5[SecureBuffer wipe]
+        M6[Minimal time window]
+    end
+
+    M1 --> P1
+    M1 --> P2
+    M1 --> P3
+    M2 --> P4
+    M2 --> P7
+    M3 --> P5
+    M4 --> P6
+    M2 --> H1
+    M2 --> H2
+    M5 --> H1
+    M6 --> V1
+
+    style P1 fill:#28a745,color:#fff
+    style P2 fill:#28a745,color:#fff
+    style P3 fill:#28a745,color:#fff
+    style P4 fill:#28a745,color:#fff
+    style P5 fill:#28a745,color:#fff
+    style P6 fill:#28a745,color:#fff
+    style P7 fill:#28a745,color:#fff
+    style H1 fill:#ffc107,color:#000
+    style H2 fill:#ffc107,color:#000
+    style V1 fill:#dc3545,color:#fff
+    style V2 fill:#dc3545,color:#fff
+    style V3 fill:#dc3545,color:#fff
+        </pre>
+    </div>
+
+    <!-- Complete Flow -->
+    <h2>7. Complete System Flow</h2>
+
+    <div class="description">
+        <strong>End-to-end:</strong> From factory provisioning to runtime operation.
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+flowchart TB
+    subgraph FACTORY["Factory Provisioning (init.sh)"]
+        F1[Run init.sh] --> F2[tpm2_createprimary]
+        F2 --> F3[tpm2_create RSA key]
+        F3 --> F4[tpm2_load]
+        F4 --> F5[tpm2_evictcontrol 0x81010002]
+        F5 --> F6[tpm2_readpublic → PEM]
+    end
+
+    subgraph UPLOAD["User Key Upload"]
+        U1[User provides PEM + passphrase] --> U2[KeyVault::protect]
+        U2 --> U3[Encrypt passphrase with TPM pubkey]
+        U3 --> U4[Store encrypted blob in DB]
+        U4 --> U5[Store encrypted PEM on disk]
+    end
+
+    subgraph RUNTIME["Runtime Operation"]
+        R1[Application starts] --> R2[harden_process]
+        R2 --> R3[KeyVault init]
+        R3 --> R4[Load protected passphrase from DB]
+        R4 --> R5[sign_with_protected_key]
+
+        subgraph CRITICAL["Critical Section (~ms)"]
+            R5 --> R6[TPM decrypts passphrase]
+            R6 --> R7[Load PEM with passphrase]
+            R7 --> R8[Wipe passphrase]
+            R8 --> R9[Sign data]
+            R9 --> R10[Free key]
+        end
+
+        R10 --> R11[Return signature]
+    end
+
+    FACTORY --> UPLOAD
+    UPLOAD --> RUNTIME
+
+    style F1 fill:#007acc,color:#fff
+    style F6 fill:#28a745,color:#fff
+    style U1 fill:#007acc,color:#fff
+    style U5 fill:#28a745,color:#fff
+    style R1 fill:#007acc,color:#fff
+    style R11 fill:#28a745,color:#fff
+    style CRITICAL fill:#fff3cd
+        </pre>
+    </div>
+
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            securityLevel: 'loose',
+            sequence: {
+                diagramMarginX: 50,
+                diagramMarginY: 10,
+                actorMargin: 50,
+                width: 180,
+                height: 65,
+                useMaxWidth: true
+            },
+            flowchart: {
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis'
+            },
+            gantt: {
+                useMaxWidth: true
+            }
+        });
+    </script>
+</body>
+</html>
