@@ -261,26 +261,19 @@ sequenceDiagram
 
     <div class="diagram-container">
         <pre class="mermaid">
-gantt
+%%{init: {'theme': 'default'}}%%
+timeline
     title Memory Contents During Key Operation
-    dateFormat X
-    axisFormat %s
-
-    section TPM
-    Root private key (always in TPM)      :active, tpm, 0, 100
-
-    section SecureBuffer
-    Decrypted passphrase (mlocked)        :crit, pass, 10, 40
-
-    section OpenSSL
-    User private key (EVP_PKEY)           :crit, key, 30, 70
-
-    section Application
-    Input data                            :data, 0, 100
-    Output signature                      :sig, 70, 100
-
-    section Vulnerable Window
-    Secrets in RAM                        :crit, vuln, 10, 70
+    section Safe (0-10ms)
+        Encrypted passphrase in DB : Encrypted PEM on disk : TPM root key in silicon
+    section Partial Exposure (10-30ms)
+        Passphrase decrypted to SecureBuffer : PEM still encrypted : TPM key active
+    section Full Exposure (30-40ms)
+        Passphrase in SecureBuffer : User private key in EVP_PKEY : VULNERABLE WINDOW
+    section Cleanup (40-70ms)
+        Passphrase WIPED : Private key still loaded : Signing in progress
+    section Safe (70-100ms)
+        All secrets wiped : Only signature remains : Operation complete
         </pre>
     </div>
 
@@ -400,37 +393,37 @@ classDiagram
     <div class="diagram-container">
         <pre class="mermaid">
 flowchart TB
-    subgraph PROTECTED["PROTECTED (Green)"]
+    subgraph PROTECTED["PROTECTED - Green"]
         direction TB
-        P1[Disk Cloning]
-        P2[Database Theft]
-        P3[Device Theft]
-        P4[Core Dump Analysis]
-        P5[Swap File Reading]
-        P6[ptrace from other users]
-        P7[/proc/mem reading]
+        P1["Disk Cloning"]
+        P2["Database Theft"]
+        P3["Device Theft"]
+        P4["Core Dump Analysis"]
+        P5["Swap File Reading"]
+        P6["ptrace from other users"]
+        P7["proc mem reading"]
     end
 
-    subgraph HARDENED["HARDENED - High Bar (Yellow)"]
+    subgraph HARDENED["HARDENED - High Bar - Yellow"]
         direction TB
-        H1[Same-user debugging]
-        H2[GDB attach]
+        H1["Same-user debugging"]
+        H2["GDB attach"]
     end
 
-    subgraph VULNERABLE["REMAINING RISK (Red)"]
+    subgraph VULNERABLE["REMAINING RISK - Red"]
         direction TB
-        V1[Root + CAP_SYS_PTRACE<br/>during operation]
-        V2[Kernel module<br/>memory access]
-        V3[Physical TPM attack]
+        V1["Root + CAP_SYS_PTRACE during operation"]
+        V2["Kernel module memory access"]
+        V3["Physical TPM attack"]
     end
 
     subgraph MITIGATIONS["Applied Mitigations"]
-        M1[TPM encryption]
-        M2[PR_SET_DUMPABLE=0]
-        M3[mlock/mlockall]
-        M4[PR_SET_PTRACER]
-        M5[SecureBuffer wipe]
-        M6[Minimal time window]
+        M1["TPM encryption"]
+        M2["PR_SET_DUMPABLE=0"]
+        M3["mlock/mlockall"]
+        M4["PR_SET_PTRACER"]
+        M5["SecureBuffer wipe"]
+        M6["Minimal time window"]
     end
 
     M1 --> P1
