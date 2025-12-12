@@ -26,6 +26,7 @@
  */
 
 #include "key_vault.h"
+#include "tss_session.h"
 
 #include <cstring>
 #include <stdexcept>
@@ -205,70 +206,42 @@ ProtectedPassphrase ProtectedPassphrase::deserialize(const std::vector<uint8_t>&
  *
  * Holds:
  * - TPM handle and connection state
- * - OpenSSL provider references
- * - TPM key reference (EVP_PKEY backed by TPM)
+ * - TssSession for encrypted TPM communication
+ * - OpenSSL provider references (for non-TPM operations)
  */
 class KeyVault::Impl {
 public:
     uint32_t tpm_handle;                    ///< TPM persistent handle (e.g., 0x81010002)
     std::string pubkey_path;                ///< Path to TPM public key PEM
-    OSSL_PROVIDER* tpm2_provider = nullptr; ///< TPM2 OpenSSL provider
-    OSSL_PROVIDER* default_provider = nullptr; ///< Default OpenSSL provider
-    EVP_PKEY* tpm_key = nullptr;            ///< Reference to TPM key (not actual key!)
+    std::string ek_ctx_path;                ///< Path to EK context file
+    std::unique_ptr<TssSession> tss_session; ///< Encrypted TPM session (EK-salted)
+    OSSL_PROVIDER* default_provider = nullptr; ///< Default OpenSSL provider (for PEM ops)
 
     /**
-     * @brief Clean up OpenSSL resources
+     * @brief Clean up resources
      */
     ~Impl() {
-        if (tpm_key) EVP_PKEY_free(tpm_key);
-        if (tpm2_provider) OSSL_PROVIDER_unload(tpm2_provider);
+        // TssSession cleans itself up via destructor
         if (default_provider) OSSL_PROVIDER_unload(default_provider);
     }
 
     /**
-     * @brief Initialize TPM connection and load providers
+     * @brief Initialize TPM connection with EK-salted encrypted session
      *
-     * Loads both tpm2 and default OpenSSL providers, then loads
-     * a reference to the TPM key via the STORE API.
+     * Creates TssSession for secure TPM communication using the
+     * Endorsement Key for session key agreement. All bus traffic
+     * is AES encrypted and the session key cannot be derived by
+     * an attacker sniffing the bus.
      */
     void init() {
-        // Load TPM2 provider for hardware crypto operations
-        tpm2_provider = OSSL_PROVIDER_load(NULL, "tpm2");
-        if (!tpm2_provider) {
-            throw std::runtime_error("Failed to load TPM2 provider. "
-                                     "Is tpm2-openssl installed?");
-        }
+        // Create EK-salted encrypted TPM session
+        // Session key is derived using salt encrypted with EK
+        tss_session = std::make_unique<TssSession>(tpm_handle, ek_ctx_path);
 
-        // Load default provider for standard crypto
+        // Load default provider for standard crypto (PEM loading, etc.)
         default_provider = OSSL_PROVIDER_load(NULL, "default");
-
-        // Build TPM handle URI (e.g., "handle:0x81010002")
-        char handle_uri[64];
-        snprintf(handle_uri, sizeof(handle_uri), "handle:0x%08x", tpm_handle);
-
-        // Open STORE to load key from TPM
-        OSSL_STORE_CTX* store = OSSL_STORE_open(handle_uri, NULL, NULL, NULL, NULL);
-        if (!store) {
-            throw std::runtime_error("Failed to open TPM key store. "
-                                     "Is the TPM key at the specified handle?");
-        }
-
-        // Load key from store
-        while (!OSSL_STORE_eof(store)) {
-            OSSL_STORE_INFO* info = OSSL_STORE_load(store);
-            if (!info) continue;
-
-            if (OSSL_STORE_INFO_get_type(info) == OSSL_STORE_INFO_PKEY) {
-                tpm_key = OSSL_STORE_INFO_get1_PKEY(info);
-            }
-            OSSL_STORE_INFO_free(info);
-
-            if (tpm_key) break;
-        }
-        OSSL_STORE_close(store);
-
-        if (!tpm_key) {
-            throw std::runtime_error("Failed to load TPM key from handle");
+        if (!default_provider) {
+            throw std::runtime_error("Failed to load OpenSSL default provider");
         }
     }
 
@@ -351,53 +324,25 @@ public:
     }
 
     /**
-     * @brief Decrypt passphrase using TPM
+     * @brief Decrypt passphrase using TPM with encrypted session
      *
      * This operation happens inside the TPM hardware.
      * The private key never leaves the TPM silicon.
+     *
+     * **Security**: Uses TssSession which encrypts all bus communication
+     * with AES-128-CFB. The decrypted passphrase travels encrypted on
+     * the physical bus (SPI/LPC/I2C), protecting against bus sniffing.
      *
      * @param encrypted RSA-encrypted passphrase blob
      * @return SecureBuffer containing plaintext (will be wiped on destruction)
      */
     SecureBuffer decrypt_passphrase(const std::vector<uint8_t>& encrypted) {
-        // Create context using TPM-backed key
-        EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(tpm_key, NULL);
-        if (!ctx) {
-            throw std::runtime_error("Cannot create TPM decrypt context");
+        if (!tss_session || !tss_session->is_valid()) {
+            throw std::runtime_error("TPM session not initialized");
         }
 
-        // Initialize decryption with PKCS#1 v1.5 padding
-        if (EVP_PKEY_decrypt_init(ctx) != 1 ||
-            EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_PADDING) != 1) {
-            EVP_PKEY_CTX_free(ctx);
-            throw std::runtime_error("TPM decrypt initialization failed");
-        }
-
-        // Determine output size
-        size_t out_len = 0;
-        if (EVP_PKEY_decrypt(ctx, NULL, &out_len, encrypted.data(), encrypted.size()) != 1) {
-            EVP_PKEY_CTX_free(ctx);
-            throw std::runtime_error("TPM decrypt length check failed");
-        }
-
-        // Decrypt into SecureBuffer
-        SecureBuffer result(out_len);
-        if (EVP_PKEY_decrypt(ctx, result.data(), &out_len,
-                             encrypted.data(), encrypted.size()) != 1) {
-            EVP_PKEY_CTX_free(ctx);
-            throw std::runtime_error("TPM decryption failed");
-        }
-
-        EVP_PKEY_CTX_free(ctx);
-
-        // Handle case where actual output is shorter than buffer
-        if (out_len < result.size()) {
-            SecureBuffer resized(out_len);
-            std::memcpy(resized.data(), result.data(), out_len);
-            return resized;
-        }
-
-        return result;
+        // Decrypt using TssSession (encrypted session protects bus traffic)
+        return tss_session->decrypt(encrypted);
     }
 
     /**
@@ -448,10 +393,12 @@ public:
 /**
  * @brief Initialize KeyVault with TPM connection
  */
-KeyVault::KeyVault(uint32_t tpm_handle, const std::string& pubkey_pem_path)
+KeyVault::KeyVault(uint32_t tpm_handle, const std::string& pubkey_pem_path,
+                   const std::string& ek_ctx_path)
     : impl_(std::make_unique<Impl>()) {
     impl_->tpm_handle = tpm_handle;
     impl_->pubkey_path = pubkey_pem_path;
+    impl_->ek_ctx_path = ek_ctx_path;
     impl_->init();
 }
 
