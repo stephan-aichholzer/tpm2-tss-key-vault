@@ -6,6 +6,7 @@
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/err.h>
+#include <openssl/rsa.h>
 
 // Helper: Print hex
 void print_hex(const std::string& label, const std::vector<uint8_t>& data) {
@@ -149,6 +150,52 @@ int main() {
         std::cout << std::endl;
         if (!signature.empty()) {
             print_hex("   Signature", signature);
+            std::cout << "   SUCCESS\n" << std::endl;
+        } else {
+            std::cout << "   FAILED\n" << std::endl;
+        }
+
+        // =====================================================================
+        // STEP 7: Decrypt using protected key
+        // =====================================================================
+        std::cout << "7. Decrypting data with protected key..." << std::endl;
+        std::cout << "   (Same pattern as sign - TPM decrypts passphrase first)\n" << std::endl;
+
+        // First, encrypt something with the public key
+        std::string secret_message = "Secret data for decryption test";
+        std::cout << "   Original: \"" << secret_message << "\"" << std::endl;
+
+        // Load public key from PEM to encrypt
+        FILE* pub_fp = fopen(USER_PEM_PATH.c_str(), "r");
+        EVP_PKEY* pub_key = PEM_read_PrivateKey(pub_fp, NULL, NULL,
+                                                 (void*)USER_PASSPHRASE.c_str());
+        fclose(pub_fp);
+
+        // Encrypt with public key
+        EVP_PKEY_CTX* enc_ctx = EVP_PKEY_CTX_new(pub_key, NULL);
+        EVP_PKEY_encrypt_init(enc_ctx);
+        EVP_PKEY_CTX_set_rsa_padding(enc_ctx, RSA_PKCS1_PADDING);
+
+        size_t enc_len = 0;
+        EVP_PKEY_encrypt(enc_ctx, NULL, &enc_len,
+                         (const uint8_t*)secret_message.data(), secret_message.size());
+        std::vector<uint8_t> encrypted(enc_len);
+        EVP_PKEY_encrypt(enc_ctx, encrypted.data(), &enc_len,
+                         (const uint8_t*)secret_message.data(), secret_message.size());
+        encrypted.resize(enc_len);
+
+        EVP_PKEY_CTX_free(enc_ctx);
+        EVP_PKEY_free(pub_key);
+
+        print_hex("   Encrypted", encrypted);
+
+        // Now decrypt using the protected key (TPM decrypts passphrase first)
+        auto decrypted = vault.decrypt_with_protected_key(loaded, USER_PEM_PATH, encrypted);
+
+        if (!decrypted.empty()) {
+            std::string decrypted_str(decrypted.begin(), decrypted.end());
+            std::cout << "   Decrypted: \"" << decrypted_str << "\"" << std::endl;
+            std::cout << "   Match: " << (secret_message == decrypted_str ? "YES" : "NO") << std::endl;
             std::cout << "   SUCCESS\n" << std::endl;
         } else {
             std::cout << "   FAILED\n" << std::endl;
