@@ -99,33 +99,89 @@ check_prerequisites() {
     echo "       Prerequisites OK"
 }
 
+identify_key_purpose() {
+    # Identify key purpose based on handle and attributes
+    local handle="$1"
+    local attrs="$2"
+
+    # Check by well-known handles first
+    case "$handle" in
+        0x81000001)
+            echo "SRK"      # Storage Root Key
+            return
+            ;;
+        0x81000002)
+            # Could be AK or another system key
+            if [[ "$attrs" == *"restricted"* && "$attrs" == *"sign"* ]]; then
+                echo "AK"   # Attestation Key
+            else
+                echo "sys"
+            fi
+            return
+            ;;
+        0x81010001)
+            if [[ "$attrs" == *"restricted"* && "$attrs" == *"decrypt"* ]]; then
+                echo "EK"   # Endorsement Key (persisted)
+            else
+                echo "?"
+            fi
+            return
+            ;;
+    esac
+
+    # Check if it's our KeyVault key
+    if [ "$handle" = "$TPM_HANDLE" ]; then
+        if is_keyvault_key "$handle"; then
+            echo "KV"       # KeyVault
+            return
+        fi
+    fi
+
+    # Check by attributes for unknown handles
+    if [[ "$attrs" == *"restricted"* && "$attrs" == *"decrypt"* && "$attrs" != *"sign"* ]]; then
+        echo "EK?"          # Looks like EK
+    elif [[ "$attrs" == *"restricted"* && "$attrs" == *"sign"* && "$attrs" != *"decrypt"* ]]; then
+        echo "AK?"          # Looks like AK
+    elif [[ "$attrs" == *"restricted"* && "$attrs" == *"decrypt"* ]]; then
+        echo "SRK?"         # Looks like storage key
+    elif [[ "$attrs" == *"decrypt"* && "$attrs" == *"sign"* ]]; then
+        echo "app"          # Application key
+    else
+        echo "?"
+    fi
+}
+
 list_persistent_handles() {
     echo ""
     echo "Persistent handles currently in use:"
-    echo "─────────────────────────────────────────────────────────────────"
+    echo "───────────────────────────────────────────────────────────────────────"
 
     local handles=$(tpm2_getcap handles-persistent 2>/dev/null | grep "0x" | tr -d ' -')
 
     if [ -z "$handles" ]; then
         echo "  (none)"
     else
-        printf "  %-14s  %-8s  %-6s  %s\n" "Handle" "Type" "Bits" "Attributes"
-        echo "  ─────────────────────────────────────────────────────────────"
+        printf "  %-14s  %-6s  %-8s  %-6s  %s\n" "Handle" "Key" "Type" "Bits" "Attributes"
+        echo "  ───────────────────────────────────────────────────────────────────"
 
         for handle in $handles; do
             local info=$(tpm2_readpublic -c "$handle" 2>/dev/null)
             local type=$(echo "$info" | grep -A1 "^type:" | tail -1 | sed 's/.*value: //')
             local bits=$(echo "$info" | grep "^bits:" | awk '{print $2}')
-            local attrs=$(echo "$info" | grep -A1 "^attributes:" | tail -1 | sed 's/.*value: //' | cut -c1-30)
+            local attrs=$(echo "$info" | grep -A1 "^attributes:" | tail -1 | sed 's/.*value: //')
+            local attrs_short=$(echo "$attrs" | cut -c1-26)
+            local purpose=$(identify_key_purpose "$handle" "$attrs")
 
             # Check if this is our target handle
             if [ "$handle" = "$TPM_HANDLE" ]; then
-                printf "  %-14s  %-8s  %-6s  %s  ← target\n" "$handle" "$type" "$bits" "$attrs"
+                printf "  %-14s  %-6s  %-8s  %-6s  %s  ← target\n" "$handle" "$purpose" "$type" "$bits" "$attrs_short"
             else
-                printf "  %-14s  %-8s  %-6s  %s\n" "$handle" "$type" "$bits" "$attrs"
+                printf "  %-14s  %-6s  %-8s  %-6s  %s\n" "$handle" "$purpose" "$type" "$bits" "$attrs_short"
             fi
         done
     fi
+    echo ""
+    echo "Key types: SRK=Storage Root, EK=Endorsement, AK=Attestation, KV=KeyVault, app=application"
     echo ""
 }
 
