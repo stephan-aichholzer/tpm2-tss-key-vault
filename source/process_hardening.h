@@ -65,6 +65,13 @@ struct HardeningOptions {
      */
     bool lock_memory = true;
 
+    /**
+     * Detect and prevent debugger attachment
+     * Uses PTRACE_TRACEME to prevent future debugger attach
+     * @note Will fail if debugger is already attached
+     */
+    bool anti_debug = true;
+
     /** Reserved for future use */
     size_t memory_lock_limit = 0;
 };
@@ -84,6 +91,12 @@ struct HardeningResult {
 
     /** True if memory is locked (mlockall succeeded) */
     bool memory_locked = false;
+
+    /** True if anti-debug measures applied (PTRACE_TRACEME) */
+    bool anti_debug_active = false;
+
+    /** True if a debugger was detected at startup */
+    bool debugger_detected = false;
 
     /** Error messages for any failed operations */
     std::string error_message;
@@ -131,3 +144,23 @@ HardeningResult check_hardening_status();
  * @param result The hardening result to display
  */
 void print_hardening_status(const HardeningResult& result);
+
+/**
+ * @brief Check if a debugger is currently attached
+ *
+ * Reads /proc/self/status to check TracerPid.
+ * A non-zero TracerPid indicates a debugger is attached.
+ *
+ * @return true if debugger is attached, false otherwise
+ */
+bool is_debugger_attached();
+
+/**
+ * @brief Check for debugger before sensitive operations
+ *
+ * Call this before performing sensitive operations to detect
+ * debuggers that may have attached after startup.
+ *
+ * @throws std::runtime_error if debugger is detected
+ */
+void assert_no_debugger();

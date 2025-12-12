@@ -12,11 +12,44 @@
 #include <sstream>
 #include <cstring>
 #include <cerrno>
+#include <stdexcept>
 
 #include <sys/prctl.h>
+#include <sys/ptrace.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <unistd.h>
+
+/**
+ * @brief Check if a debugger is attached by reading TracerPid
+ *
+ * Linux maintains TracerPid in /proc/self/status.
+ * A value of 0 means no debugger, non-zero is the PID of the tracer.
+ */
+bool is_debugger_attached() {
+    std::ifstream status("/proc/self/status");
+    if (!status.is_open()) {
+        return false;  // Can't determine, assume safe
+    }
+
+    std::string line;
+    while (std::getline(status, line)) {
+        if (line.compare(0, 10, "TracerPid:") == 0) {
+            int tracer_pid = std::stoi(line.substr(10));
+            return tracer_pid != 0;
+        }
+    }
+    return false;
+}
+
+/**
+ * @brief Assert no debugger is attached, throw if detected
+ */
+void assert_no_debugger() {
+    if (is_debugger_attached()) {
+        throw std::runtime_error("Debugger detected - aborting for security");
+    }
+}
 
 /**
  * @brief Apply all process hardening measures
@@ -153,6 +186,39 @@ HardeningResult harden_process(const HardeningOptions& opts) {
         }
     }
 
+    // =========================================================================
+    // Layer 4: Anti-debug measures
+    // =========================================================================
+    if (opts.anti_debug) {
+        /*
+         * First check if a debugger is already attached.
+         * TracerPid in /proc/self/status will be non-zero if traced.
+         */
+        if (is_debugger_attached()) {
+            result.debugger_detected = true;
+            errors << "DEBUGGER DETECTED - security compromised; ";
+        }
+
+        /*
+         * PTRACE_TRACEME makes this process trace itself.
+         * Side effect: no other process can ptrace us (only one tracer allowed).
+         *
+         * If a debugger is already attached, this will fail with EPERM.
+         * This serves as both detection and prevention.
+         */
+        if (ptrace(PTRACE_TRACEME, 0, nullptr, nullptr) == 0) {
+            result.anti_debug_active = true;
+        } else {
+            if (errno == EPERM) {
+                // Already being traced (debugger attached)
+                result.debugger_detected = true;
+                errors << "PTRACE_TRACEME failed (debugger attached?); ";
+            } else {
+                errors << "PTRACE_TRACEME failed: " << strerror(errno) << "; ";
+            }
+        }
+    }
+
     result.error_message = errors.str();
     return result;
 }
@@ -181,6 +247,9 @@ HardeningResult check_hardening_status() {
     // ptrace status is tied to dumpable on most systems
     result.ptrace_disabled = result.dumps_disabled;
 
+    // Check for debugger
+    result.debugger_detected = is_debugger_attached();
+
     return result;
 }
 
@@ -199,6 +268,13 @@ void print_hardening_status(const HardeningResult& result) {
     std::cout << "  Memory locked:        "
               << (result.memory_locked ? "YES" : "NO (secrets still mlock'd individually)")
               << std::endl;
+
+    std::cout << "  Anti-debug active:    "
+              << (result.anti_debug_active ? "YES" : "NO") << std::endl;
+
+    if (result.debugger_detected) {
+        std::cout << "  *** WARNING: DEBUGGER DETECTED ***" << std::endl;
+    }
 
     if (!result.error_message.empty()) {
         std::cout << "  Notes: " << result.error_message << std::endl;
