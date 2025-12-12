@@ -98,6 +98,9 @@ struct HardeningResult {
     /** True if a debugger was detected at startup */
     bool debugger_detected = false;
 
+    /** True if running under Valgrind (memory instrumentation) */
+    bool valgrind_detected = false;
+
     /** Error messages for any failed operations */
     std::string error_message;
 };
@@ -164,3 +167,14 @@ bool is_debugger_attached();
  * @throws std::runtime_error if debugger is detected
  */
 void assert_no_debugger();
+
+/**
+ * @brief Check if running under Valgrind
+ *
+ * Valgrind uses binary translation/emulation rather than ptrace,
+ * so it's not detected by is_debugger_attached(). This function
+ * checks for Valgrind-specific indicators in /proc/self/maps.
+ *
+ * @return true if running under Valgrind, false otherwise
+ */
+bool is_running_under_valgrind();

@@ -21,6 +21,30 @@
 #include <unistd.h>
 
 /**
+ * @brief Check if running under Valgrind
+ *
+ * Valgrind uses binary translation/emulation rather than ptrace,
+ * so TracerPid will be 0 and PTRACE_TRACEME will succeed.
+ * We detect Valgrind by looking for its libraries in /proc/self/maps.
+ */
+bool is_running_under_valgrind() {
+    std::ifstream maps("/proc/self/maps");
+    if (!maps.is_open()) {
+        return false;  // Can't determine, assume not running under valgrind
+    }
+
+    std::string line;
+    while (std::getline(maps, line)) {
+        // Valgrind maps its libraries into the process address space
+        if (line.find("valgrind") != std::string::npos ||
+            line.find("vgpreload") != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
  * @brief Check if a debugger is attached by reading TracerPid
  *
  * Linux maintains TracerPid in /proc/self/status.
@@ -207,6 +231,24 @@ HardeningResult harden_process(const HardeningOptions& opts) {
         }
 
         /*
+         * Check for Valgrind separately.
+         * Valgrind uses binary translation, not ptrace, so it evades
+         * TracerPid detection and PTRACE_TRACEME won't fail.
+         * We detect it by looking for valgrind libraries in /proc/self/maps.
+         */
+        if (is_running_under_valgrind()) {
+            result.valgrind_detected = true;
+            errors << "VALGRIND DETECTED - memory instrumentation active; ";
+
+            /*
+             * PRODUCTION: Uncomment to abort when Valgrind detected
+             *
+             * std::cerr << "FATAL: Valgrind detected - aborting for security" << std::endl;
+             * std::abort();
+             */
+        }
+
+        /*
          * PTRACE_TRACEME makes this process trace itself.
          * Side effect: no other process can ptrace us (only one tracer allowed).
          *
@@ -264,6 +306,9 @@ HardeningResult check_hardening_status() {
     // Check for debugger
     result.debugger_detected = is_debugger_attached();
 
+    // Check for Valgrind
+    result.valgrind_detected = is_running_under_valgrind();
+
     return result;
 }
 
@@ -288,6 +333,10 @@ void print_hardening_status(const HardeningResult& result) {
 
     if (result.debugger_detected) {
         std::cout << "  *** WARNING: DEBUGGER DETECTED ***" << std::endl;
+    }
+
+    if (result.valgrind_detected) {
+        std::cout << "  *** WARNING: VALGRIND DETECTED ***" << std::endl;
     }
 
     if (!result.error_message.empty()) {
