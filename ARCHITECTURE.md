@@ -1,17 +1,17 @@
-# TPM2 Security Architecture - Concept Documentation
+# TPM2 Security Architecture
 
-This document describes the security architecture and principles used in the TPM2-protected key management system for IoT platforms.
+Security architecture for TPM2-protected key management on IoT platforms.
+
+For TPM2 implementation details (EK, encrypted sessions, TSS2), see [TPM.md](TPM.md).
 
 ## Table of Contents
 
 1. [Overview](#overview)
 2. [Threat Model](#threat-model)
 3. [Security Architecture](#security-architecture)
-4. [Key Hierarchy](#key-hierarchy)
-5. [Protection Mechanisms](#protection-mechanisms)
-6. [Runtime Flow](#runtime-flow)
-7. [Security Boundaries](#security-boundaries)
-8. [Implementation Components](#implementation-components)
+4. [Protection Mechanisms](#protection-mechanisms)
+5. [Runtime Flow](#runtime-flow)
+6. [Security Boundaries](#security-boundaries)
 
 ---
 
@@ -46,6 +46,7 @@ This system provides secure storage and usage of cryptographic keys for IoT devi
 | **Device Theft** | Attacker steals device, extracts storage | TPM-bound encryption - data useless on other hardware |
 | **Disk Cloning** | Attacker copies SD card/SSD | Encrypted passphrases require original TPM |
 | **Database Breach** | Attacker dumps application database | Passphrase blobs encrypted, need TPM to decrypt |
+| **Bus Sniffing** | Logic analyzer on SPI/LPC bus | EK-salted encrypted sessions (see [TPM.md](TPM.md)) |
 | **Cold Boot Attack** | Freeze RAM, extract contents | mlock() prevents swap, brief exposure window |
 | **Core Dump Analysis** | Trigger crash, analyze dump | PR_SET_DUMPABLE=0 prevents dumps |
 | **Process Debugging** | ptrace attach to read memory | PR_SET_PTRACER restrictions, non-dumpable process |
@@ -142,51 +143,6 @@ The system uses a hybrid approach to balance security with flexibility:
 | **All keys in TPM** | Maximum security, keys never extractable | Users can't bring their own keys |
 | **All keys in files** | Maximum flexibility | Vulnerable to disk cloning |
 | **Hybrid (our approach)** | Good security + user key support | Brief memory exposure window |
-
----
-
-## Key Hierarchy
-
-### TPM Key Structure
-
-```
-TPM Internal Seed (burned in manufacturing)
-         │
-         │ Derived deterministically
-         ▼
-┌─────────────────────────────────────────┐
-│         PRIMARY KEY (Storage Root)       │
-│         Handle: transient                │
-│         Type: RSA-2048                   │
-│         Purpose: Wrap child keys         │
-└─────────────────────────────────────────┘
-         │
-         │ Parent of
-         ▼
-┌─────────────────────────────────────────┐
-│         ROOT RSA KEY                     │
-│         Handle: 0x81010002 (persistent)  │
-│         Type: RSA-2048                   │
-│         Attributes:                      │
-│           - fixedtpm (bound to this TPM) │
-│           - fixedparent                  │
-│           - sensitivedataorigin          │
-│           - sign | decrypt               │
-│         Purpose:                         │
-│           - Encrypt/decrypt passphrases  │
-│           - Sign platform data           │
-└─────────────────────────────────────────┘
-```
-
-### Key Attributes Explained
-
-| Attribute | Meaning | Security Impact |
-|-----------|---------|-----------------|
-| `fixedtpm` | Key cannot be duplicated to another TPM | Prevents key extraction |
-| `fixedparent` | Key cannot be moved to different parent | Maintains hierarchy |
-| `sensitivedataorigin` | Key generated inside TPM | Never existed outside |
-| `sign` | Key can create signatures | For authentication |
-| `decrypt` | Key can decrypt data | For passphrase unwrapping |
 
 ---
 
@@ -456,41 +412,14 @@ Time ─────────────────────────
 
 ---
 
-## Implementation Components
+## Implementation
 
-### Class Overview
+Source code is in `source/`:
 
-#### SecureBuffer
-Memory buffer with automatic secure wiping:
-- Constructor: Allocates and mlocks memory
-- Destructor: Securely wipes and munlocks
-- Move-only (no copies to prevent multiple wipes)
+| File | Purpose |
+|------|---------|
+| `key_vault.h/cpp` | KeyVault API, SecureBuffer, ProtectedPassphrase |
+| `tss_session.h/cpp` | TSS2 encrypted session management |
+| `process_hardening.h/cpp` | Memory/process protection utilities |
 
-#### ProtectedPassphrase
-Serializable container for TPM-encrypted passphrases:
-- `key_id`: Identifier for the key
-- `encrypted_data`: RSA-encrypted passphrase blob
-- `serialize()`/`deserialize()`: For database storage
-
-#### KeyVault
-Main interface for protected key operations:
-- `protect()`: Encrypt passphrase with TPM public key
-- `load_protected_key()`: Decrypt passphrase, load PEM
-- `sign_with_protected_key()`: Complete sign operation
-- `decrypt_with_protected_key()`: Complete decrypt operation
-
-#### Process Hardening Functions
-- `harden_process()`: Apply all protections
-- `check_hardening_status()`: Verify current state
-- `print_hardening_status()`: Display status
-
----
-
-## References
-
-- [TPM 2.0 Specification](https://trustedcomputinggroup.org/resource/tpm-library-specification/)
-- [tpm2-tools Documentation](https://tpm2-tools.readthedocs.io/)
-- [tpm2-openssl Provider](https://github.com/tpm2-software/tpm2-openssl)
-- [OpenSSL 3.0 Provider Architecture](https://www.openssl.org/docs/man3.0/man7/provider.html)
-- [Linux prctl Manual](https://man7.org/linux/man-pages/man2/prctl.2.html)
-- [mlock Manual](https://man7.org/linux/man-pages/man2/mlock.2.html)
+See [TPM.md](TPM.md) for TSS2 implementation details.

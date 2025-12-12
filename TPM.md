@@ -1,6 +1,8 @@
 # TPM2 Implementation Details
 
-This document describes the TPM2 integration, session handling, and security mechanisms used in the KeyVault implementation.
+TPM2 integration, session handling, and TSS2 library usage.
+
+For security architecture and threat model, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Overview
 
@@ -234,46 +236,6 @@ tpm2_evictcontrol -C o -c keys/rsakey.ctx 0x81010002
 
 # 5. Export public key
 tpm2_readpublic -c 0x81010002 -f pem -o keys/tpm_rsa_pub.pem
-```
-
-## Security Properties
-
-### Protected Against
-
-| Attack Vector | Protection |
-|--------------|------------|
-| Disk cloning | Passphrase encrypted with TPM-bound key |
-| Database theft | Encrypted blob useless without TPM |
-| Bus sniffing (SPI/LPC) | EK-salted encrypted session |
-| Swap file exposure | mlock() on SecureBuffer |
-| Core dumps | PR_SET_DUMPABLE=0 |
-| ptrace attacks | PR_SET_DUMPABLE=0 (requires CAP_SYS_PTRACE) |
-
-### Remaining Attack Surface
-
-| Attack | Mitigation |
-|--------|------------|
-| Root with CAP_SYS_PTRACE | Minimize key exposure window (~ms) |
-| Kernel memory access | Beyond software mitigation |
-| TPM firmware vulnerabilities | Use certified TPM, apply updates |
-| Cold boot attacks | Use memory encryption if available |
-
-## Code Structure
-
-```
-tss_session.h      # TssSession API
-tss_session.cpp    # TSS2/ESYS implementation
-├── EK_RSA_TEMPLATE    # Standard EK template
-├── TssSession::Impl   # RAII wrapper
-│   ├── init()         # Session establishment
-│   └── do_decrypt()   # RSA decrypt with session
-└── Public API
-
-key_vault.h        # KeyVault API
-key_vault.cpp      # KeyVault implementation
-├── SecureBuffer       # mlock'd memory
-├── ProtectedPassphrase# Serializable encrypted passphrase
-└── KeyVault::Impl     # Coordinates TSS + OpenSSL
 ```
 
 ## Troubleshooting
