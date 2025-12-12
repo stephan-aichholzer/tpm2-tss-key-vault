@@ -50,6 +50,8 @@ KEY_CTX="/tmp/tpm_key_$$.ctx"
 
 # Output files
 PUBLIC_KEY_PEM="${KEY_DIR}/tpm_rsa_pub.pem"
+EK_CTX="${KEY_DIR}/ek.ctx"
+EK_PUB="${KEY_DIR}/ek.pub"
 
 # =============================================================================
 # Functions
@@ -70,7 +72,7 @@ print_banner() {
 }
 
 check_prerequisites() {
-    echo "[1/6] Checking prerequisites..."
+    echo "[1/7] Checking prerequisites..."
 
     # Check for tpm2-tools
     if ! command -v tpm2_createprimary &> /dev/null; then
@@ -91,7 +93,7 @@ check_prerequisites() {
 }
 
 check_existing_key() {
-    echo "[2/6] Checking for existing key at $TPM_HANDLE..."
+    echo "[2/7] Checking for existing key at $TPM_HANDLE..."
 
     if tpm2_readpublic -c "$TPM_HANDLE" &> /dev/null; then
         echo "       Key already exists at $TPM_HANDLE"
@@ -108,8 +110,23 @@ remove_existing_key() {
     echo "       Key removed"
 }
 
+create_ek() {
+    echo "[3/7] Creating Endorsement Key (EK) context..."
+
+    # Create/load EK - used for encrypted session key agreement
+    # The EK is derived from TPM's burned-in seed (same every time)
+    # This doesn't "create" a new key, it loads the existing factory EK
+    tpm2_createek \
+        -c "$EK_CTX" \
+        -G rsa \
+        -u "$EK_PUB" \
+        > /dev/null
+
+    echo "       EK context created (for encrypted sessions)"
+}
+
 create_primary_key() {
-    echo "[3/6] Creating primary storage key..."
+    echo "[4/7] Creating primary storage key..."
 
     # Create primary key under owner hierarchy
     # This key is derived from TPM's internal seed (deterministic)
@@ -124,7 +141,7 @@ create_primary_key() {
 }
 
 create_rsa_key() {
-    echo "[4/6] Creating RSA-2048 key with sign+decrypt attributes..."
+    echo "[5/7] Creating RSA-2048 key with sign+decrypt attributes..."
 
     # Create RSA key with the following attributes:
     #   fixedtpm           - Key can only be used on this TPM
@@ -145,7 +162,7 @@ create_rsa_key() {
 }
 
 load_and_persist_key() {
-    echo "[5/6] Loading and persisting key at $TPM_HANDLE..."
+    echo "[6/7] Loading and persisting key at $TPM_HANDLE..."
 
     # Load key into TPM
     tpm2_load \
@@ -166,7 +183,7 @@ load_and_persist_key() {
 }
 
 export_public_key() {
-    echo "[6/6] Exporting public key to $PUBLIC_KEY_PEM..."
+    echo "[7/7] Exporting public key to $PUBLIC_KEY_PEM..."
 
     # Create output directory if needed
     mkdir -p "$KEY_DIR"
@@ -233,12 +250,18 @@ print_summary() {
     echo ""
     echo "TPM Key Handle:  $TPM_HANDLE"
     echo "Public Key:      $PUBLIC_KEY_PEM"
+    echo "EK Context:      $EK_CTX (for encrypted sessions)"
     echo ""
     echo "Key Attributes:"
     echo "  - fixedtpm: Key bound to THIS TPM only"
     echo "  - sensitivedataorigin: Private key generated inside TPM"
     echo "  - decrypt: Can decrypt data (for passphrase unwrapping)"
     echo "  - sign: Can sign data (for authentication)"
+    echo ""
+    echo "Endorsement Key (EK):"
+    echo "  - Factory-burned key for TPM identity"
+    echo "  - Used for encrypted session key agreement"
+    echo "  - Protects bus communication against sniffing"
     echo ""
     echo "Next Steps:"
     echo "  1. Build the C++ examples: cd build && cmake .. && make"
@@ -248,6 +271,7 @@ print_summary() {
     echo "Security Note:"
     echo "  The private key exists ONLY inside the TPM chip."
     echo "  It cannot be extracted or cloned to another device."
+    echo "  Bus traffic is encrypted using EK-derived session keys."
     echo ""
 }
 
@@ -325,6 +349,7 @@ if check_existing_key; then
 fi
 
 echo ""
+create_ek
 create_primary_key
 create_rsa_key
 load_and_persist_key

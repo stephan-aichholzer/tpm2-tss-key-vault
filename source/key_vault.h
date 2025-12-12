@@ -209,14 +209,16 @@ public:
      *
      * @param tpm_handle Persistent TPM handle (e.g., 0x81010002)
      * @param pubkey_pem_path Path to TPM public key PEM file
+     * @param ek_ctx_path Path to Endorsement Key context file (from init.sh)
      *
      * @throws std::runtime_error if TPM connection fails
      *
      * @code
-     * KeyVault vault(0x81010002, "keys/tpm_rsa_pub.pem");
+     * KeyVault vault(0x81010002, "keys/tpm_rsa_pub.pem", "keys/ek.ctx");
      * @endcode
      */
-    KeyVault(uint32_t tpm_handle, const std::string& pubkey_pem_path);
+    KeyVault(uint32_t tpm_handle, const std::string& pubkey_pem_path,
+             const std::string& ek_ctx_path);
 
     /**
      * @brief Clean up TPM connection and OpenSSL resources

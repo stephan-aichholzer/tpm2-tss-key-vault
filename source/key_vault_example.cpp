@@ -51,14 +51,15 @@ int main() {
 
     const uint32_t TPM_HANDLE = 0x81010002;
     const std::string PUBKEY_PATH = "keys/tpm_rsa_pub.pem";
+    const std::string EK_CTX_PATH = "keys/ek.ctx";
 
     try {
         // =====================================================================
-        // STEP 1: Initialize KeyVault
+        // STEP 1: Initialize KeyVault with EK-salted encrypted session
         // =====================================================================
-        std::cout << "1. Initializing KeyVault with TPM..." << std::endl;
-        KeyVault vault(TPM_HANDLE, PUBKEY_PATH);
-        std::cout << "   OK - TPM key loaded\n" << std::endl;
+        std::cout << "1. Initializing KeyVault with TPM (EK-salted session)..." << std::endl;
+        KeyVault vault(TPM_HANDLE, PUBKEY_PATH, EK_CTX_PATH);
+        std::cout << "   OK - TPM key loaded with encrypted session\n" << std::endl;
 
         // =====================================================================
         // STEP 2: Simulate user uploading encrypted PEM
@@ -136,6 +137,7 @@ int main() {
         std::cout << "  [x] Core dump analysis (PR_SET_DUMPABLE=0)" << std::endl;
         std::cout << "  [x] ptrace from other processes" << std::endl;
         std::cout << "  [x] /proc/<pid>/mem reading (requires CAP_SYS_PTRACE)" << std::endl;
+        std::cout << "  [x] Bus sniffing (EK-salted encrypted session)" << std::endl;
         std::cout << std::endl;
 
         std::cout << "Vulnerable window (unavoidable for user-provided keys):" << std::endl;
