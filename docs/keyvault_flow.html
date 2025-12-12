@@ -83,13 +83,14 @@
 <body>
     <h1>KeyVault C++ Implementation Flow</h1>
     <p>Visual diagrams showing the C++ implementation of TPM-protected key management.</p>
+    <p><strong>See also:</strong> <a href="tpm_basics.html">TPM2 Basics</a> | <a href="tss_session.html">Encrypted Sessions</a></p>
 
     <!-- Application Startup -->
     <h2>1. Application Startup &amp; Initialization</h2>
 
     <div class="description">
-        <strong>Phase:</strong> Application startup - harden process and initialize TPM connection.
-        <br><strong>Files:</strong> <code>main()</code> in key_vault_example.cpp, process_hardening.cpp, key_vault.cpp
+        <strong>Phase:</strong> Application startup - harden process and initialize TPM connection with encrypted session.
+        <br><strong>Files:</strong> <code>source/key_vault_example.cpp</code>, <code>source/process_hardening.cpp</code>, <code>source/key_vault.cpp</code>, <code>source/tss_session.cpp</code>
     </div>
 
     <div class="diagram-container">
@@ -100,11 +101,11 @@ flowchart TD
     C --> D["prctl(PR_SET_PTRACER, 0)"]
     D --> E["mlockall(MCL_CURRENT | MCL_FUTURE)"]
     E --> F["setrlimit(RLIMIT_CORE, 0)"]
-    F --> G["KeyVault vault(TPM_HANDLE, pubkey_path)"]
-    G --> H["OSSL_PROVIDER_load tpm2"]
-    H --> I["OSSL_PROVIDER_load default"]
-    I --> J["OSSL_STORE_open handle:0x81010002"]
-    J --> K["Load TPM key reference"]
+    F --> G["KeyVault vault(TPM_HANDLE, pubkey_path, ek_ctx_path)"]
+    G --> H["TssSession: Create EK"]
+    H --> I["TssSession: Start salted session"]
+    I --> J["Session encrypted with AES-128-CFB"]
+    J --> K["Load TPM key via encrypted session"]
     K --> L["KeyVault Ready"]
 
     style A fill:#4CAF50,color:#fff
@@ -113,10 +114,15 @@ flowchart TD
     style D fill:#ff9800,color:#fff
     style E fill:#ff9800,color:#fff
     style F fill:#ff9800,color:#fff
-    style H fill:#2196F3,color:#fff
-    style I fill:#2196F3,color:#fff
-    style J fill:#2196F3,color:#fff
+    style H fill:#9b59b6,color:#fff
+    style I fill:#9b59b6,color:#fff
+    style J fill:#9b59b6,color:#fff
         </pre>
+    </div>
+
+    <div class="security-note">
+        <strong>Bus Protection:</strong> All TPM communication uses EK-salted encrypted sessions.
+        See <a href="tss_session.html">Encrypted Sessions</a> for details.
     </div>
 
     <div class="security-note">
@@ -188,6 +194,7 @@ sequenceDiagram
     autonumber
     participant App as Application
     participant KV as KeyVault
+    participant TSS as TssSession
     participant TPM as TPM2 Chip
     participant SB as SecureBuffer
     participant SSL as OpenSSL
@@ -199,13 +206,14 @@ sequenceDiagram
 
         KV->>KV: load_protected_key()
 
-        Note over KV,TPM: Step 1: TPM decrypts passphrase
+        Note over KV,TPM: Step 1: TPM decrypts passphrase (encrypted bus)
 
-        KV->>TPM: EVP_PKEY_decrypt(encrypted_blob)
+        KV->>TSS: decrypt(encrypted_blob)
+        TSS->>TPM: Esys_RSA_Decrypt (AES-128-CFB encrypted)
         TPM->>TPM: RSA decrypt inside silicon
-        TPM-->>KV: plaintext passphrase
+        TPM-->>TSS: plaintext (AES-128-CFB encrypted)
+        TSS-->>KV: SecureBuffer(passphrase)
 
-        KV->>SB: SecureBuffer(passphrase)
         Note over SB: Memory mlocked<br/>Cannot be swapped
 
         Note over KV,SSL: Step 2: Load encrypted PEM
@@ -437,7 +445,7 @@ For 1000 operations/day:
 classDiagram
     class KeyVault {
         -Impl* impl_
-        +KeyVault(tpm_handle, pubkey_path)
+        +KeyVault(tpm_handle, pubkey_path, ek_ctx_path)
         +~KeyVault()
         +protect(key_id, passphrase) ProtectedPassphrase
         +load_protected_key(protected_pass, pem_path) EVP_PKEY*
@@ -448,13 +456,29 @@ classDiagram
     class KeyVault_Impl {
         +uint32_t tpm_handle
         +string pubkey_path
-        +OSSL_PROVIDER* tpm2_provider
+        +string ek_ctx_path
+        +TssSession* tss_session
         +OSSL_PROVIDER* default_provider
-        +EVP_PKEY* tpm_key
         +init()
         +encrypt_passphrase(passphrase) vector~uint8_t~
-        +decrypt_passphrase(encrypted) SecureBuffer
         +load_encrypted_pem(pem_path, passphrase) EVP_PKEY*
+    }
+
+    class TssSession {
+        -Impl* impl_
+        +TssSession(key_handle, ek_ctx_path)
+        +~TssSession()
+        +decrypt(ciphertext) SecureBuffer
+        +is_valid() bool
+    }
+
+    class TssSession_Impl {
+        +ESYS_CONTEXT* ctx
+        +ESYS_TR key_handle
+        +ESYS_TR ek_handle
+        +ESYS_TR session
+        +init(handle, ek_path)
+        +do_decrypt(ciphertext) SecureBuffer
     }
 
     class SecureBuffer {
@@ -482,13 +506,14 @@ classDiagram
     }
 
     KeyVault *-- KeyVault_Impl : pimpl
-    KeyVault_Impl ..> SecureBuffer : creates
+    KeyVault_Impl *-- TssSession : owns
+    TssSession *-- TssSession_Impl : pimpl
+    TssSession ..> SecureBuffer : returns
     KeyVault ..> ProtectedPassphrase : uses
-    KeyVault_Impl ..> EVP_PKEY : manages
+
+    note for TssSession "EK-salted encrypted session\nAES-128-CFB bus encryption"
 
     note for SecureBuffer "Memory is mlocked\nand securely wiped\non destruction"
-
-    note for KeyVault_Impl "Holds TPM connection\nand OpenSSL providers"
         </pre>
     </div>
 
@@ -508,6 +533,7 @@ flowchart LR
         M3["mlock/mlockall"]
         M4["PR_SET_PTRACER"]
         M5["SecureBuffer wipe"]
+        M6["EK-salted sessions"]
     end
 
     subgraph THREATS["Threat Coverage"]
@@ -518,6 +544,7 @@ flowchart LR
         P5["Swap Exposure ✓"]
         P6["ptrace attach ✓"]
         P7["proc/mem read ✓"]
+        P8["Bus Sniffing ✓"]
         H1["Same-user debug ⚠"]
         V1["Root + CAP_SYS_PTRACE ✗"]
         V2["Kernel memory access ✗"]
@@ -530,6 +557,7 @@ flowchart LR
     M2 --> P7
     M3 --> P5
     M4 --> P6
+    M6 --> P8
     M2 --> H1
     M5 --> H1
 
@@ -540,9 +568,11 @@ flowchart LR
     style P5 fill:#28a745,color:#fff
     style P6 fill:#28a745,color:#fff
     style P7 fill:#28a745,color:#fff
+    style P8 fill:#28a745,color:#fff
     style H1 fill:#ffc107,color:#000
     style V1 fill:#dc3545,color:#fff
     style V2 fill:#dc3545,color:#fff
+    style M6 fill:#9b59b6,color:#fff
         </pre>
     </div>
 

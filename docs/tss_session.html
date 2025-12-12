@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TPM2 Encrypted Sessions - EK Salting</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #9b59b6;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #9b59b6;
+            margin-top: 40px;
+        }
+        .diagram-container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .description {
+            background: #f3e5f5;
+            border-left: 4px solid #9b59b6;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .security-note {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .warning-note {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .danger-note {
+            background: #f8d7da;
+            border-left: 4px solid #dc3545;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 0 4px 4px 0;
+        }
+        code {
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        .mermaid {
+            display: flex;
+            justify-content: center;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 15px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 10px;
+            text-align: left;
+        }
+        th {
+            background: #9b59b6;
+            color: white;
+        }
+        tr:nth-child(even) {
+            background: #f9f9f9;
+        }
+    </style>
+</head>
+<body>
+    <h1>TPM2 Encrypted Sessions</h1>
+    <p>EK-salted encrypted sessions protect TPM bus communication against physical sniffing attacks.</p>
+    <p><strong>See also:</strong> <a href="tpm_basics.html">TPM2 Basics</a> | <a href="keyvault_flow.html">KeyVault Implementation</a></p>
+
+    <!-- The Problem -->
+    <h2>1. The Problem: Bus Sniffing</h2>
+
+    <div class="danger-note">
+        <strong>Vulnerability:</strong> Without encrypted sessions, decrypted data travels in plaintext over the SPI/LPC bus.
+        An attacker with physical access and a logic analyzer can intercept secrets.
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+sequenceDiagram
+    participant App as Application
+    participant TSS as TSS Library
+    participant Bus as SPI/LPC Bus
+    participant TPM as TPM2 Chip
+    participant Attacker as Attacker<br/>(Logic Analyzer)
+
+    Note over App,TPM: UNENCRYPTED SESSION (VULNERABLE)
+
+    App->>TSS: Decrypt passphrase
+    TSS->>Bus: RSA_Decrypt command
+    Bus->>TPM: [plaintext command]
+
+    Attacker-->>Bus: Sniffing...
+
+    TPM->>TPM: RSA decrypt inside silicon
+    TPM->>Bus: Plaintext passphrase!
+    Bus->>TSS: [plaintext response]
+
+    Attacker-->>Bus: CAPTURED!
+
+    TSS->>App: passphrase
+
+    Note over Attacker: Attacker has the<br/>decrypted passphrase!
+        </pre>
+    </div>
+
+    <!-- The Solution -->
+    <h2>2. The Solution: EK-Salted Encrypted Sessions</h2>
+
+    <div class="description">
+        <strong>Solution:</strong> Use TPM2 encrypted sessions with Endorsement Key (EK) salting.
+        All bus traffic is encrypted with AES-128-CFB using a session key that attackers cannot derive.
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+sequenceDiagram
+    participant App as Application
+    participant TSS as TSS Library
+    participant Bus as SPI/LPC Bus
+    participant TPM as TPM2 Chip
+    participant Attacker as Attacker<br/>(Logic Analyzer)
+
+    Note over App,TPM: ENCRYPTED SESSION (PROTECTED)
+
+    App->>TSS: Decrypt passphrase
+    TSS->>Bus: RSA_Decrypt command
+    Bus->>TPM: [AES-128-CFB encrypted]
+
+    Attacker-->>Bus: Sniffing...
+    Note over Attacker: Sees only<br/>encrypted garbage
+
+    TPM->>TPM: RSA decrypt inside silicon
+    TPM->>Bus: Encrypted response
+    Bus->>TSS: [AES-128-CFB encrypted]
+
+    Attacker-->>Bus: Still encrypted!
+
+    TSS->>TSS: Decrypt with session key
+    TSS->>App: passphrase
+
+    Note over Attacker: CANNOT decrypt<br/>without session key
+        </pre>
+    </div>
+
+    <!-- Why EK Salting -->
+    <h2>3. Why EK Salting is Critical</h2>
+
+    <div class="warning-note">
+        <strong>Without EK salting:</strong> The session key is derived from nonces that travel in plaintext.
+        An attacker can observe the nonces and derive the same session key!
+    </div>
+
+    <h3>Unsalted Session (Vulnerable)</h3>
+    <div class="diagram-container">
+        <pre class="mermaid">
+flowchart LR
+    subgraph BUS["Visible on Bus"]
+        N1["nonce_tss"]
+        N2["nonce_tpm"]
+    end
+
+    subgraph DERIVE["Key Derivation"]
+        KDF["KDF(nonce_tss || nonce_tpm)"]
+    end
+
+    subgraph RESULT["Session Key"]
+        SK["session_key"]
+    end
+
+    N1 --> KDF
+    N2 --> KDF
+    KDF --> SK
+
+    style N1 fill:#dc3545,color:#fff
+    style N2 fill:#dc3545,color:#fff
+    style SK fill:#dc3545,color:#fff
+        </pre>
+    </div>
+
+    <div class="danger-note">
+        <strong>Problem:</strong> Attacker sees both nonces → can compute session_key → can decrypt all traffic!
+    </div>
+
+    <h3>EK-Salted Session (Protected)</h3>
+    <div class="diagram-container">
+        <pre class="mermaid">
+flowchart LR
+    subgraph HIDDEN["Hidden (Encrypted with EK)"]
+        SALT["salt"]
+    end
+
+    subgraph BUS["Visible on Bus"]
+        N1["nonce_tss"]
+        N2["nonce_tpm"]
+        ESALT["Enc(salt, EK_pub)"]
+    end
+
+    subgraph DERIVE["Key Derivation"]
+        KDF["KDF(salt || nonce_tss || nonce_tpm)"]
+    end
+
+    subgraph RESULT["Session Key"]
+        SK["session_key"]
+    end
+
+    SALT --> KDF
+    N1 --> KDF
+    N2 --> KDF
+    KDF --> SK
+
+    style SALT fill:#28a745,color:#fff
+    style ESALT fill:#ffc107,color:#000
+    style SK fill:#28a745,color:#fff
+        </pre>
+    </div>
+
+    <div class="security-note">
+        <strong>Protection:</strong> Salt is encrypted with EK public key. Only the TPM can decrypt it.
+        Attacker cannot derive session_key without knowing the salt!
+    </div>
+
+    <!-- Session Establishment -->
+    <h2>4. Session Establishment Flow</h2>
+
+    <div class="description">
+        <strong>Implementation:</strong> Using TSS2 ESYS API to establish an EK-salted encrypted session.
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant App as TssSession
+    participant ESYS as ESYS API
+    participant TPM as TPM2 Chip
+
+    Note over App,TPM: Step 1: Initialize Context
+    App->>ESYS: Esys_Initialize()
+    ESYS->>TPM: Connect via /dev/tpmrm0
+    TPM-->>ESYS: Context ready
+    ESYS-->>App: ESYS_CONTEXT*
+
+    Note over App,TPM: Step 2: Load Application Key
+    App->>ESYS: Esys_TR_FromTPMPublic(0x81010002)
+    ESYS->>TPM: ReadPublic
+    TPM-->>ESYS: Key metadata
+    ESYS-->>App: key_handle
+
+    Note over App,TPM: Step 3: Create Endorsement Key
+    App->>ESYS: Esys_CreatePrimary(ENDORSEMENT, EK_TEMPLATE)
+    ESYS->>TPM: CreatePrimary
+    TPM->>TPM: Derive EK from seed
+    TPM-->>ESYS: EK handle
+    ESYS-->>App: ek_handle
+
+    Note over App,TPM: Step 4: Start Salted Session
+    App->>ESYS: Esys_StartAuthSession(ek_handle, HMAC, AES-128-CFB)
+    ESYS->>ESYS: Generate random salt
+    ESYS->>ESYS: Encrypt salt with EK public key
+    ESYS->>TPM: StartAuthSession + encrypted_salt
+    TPM->>TPM: Decrypt salt with EK private key
+    TPM->>TPM: Derive session key from salt + nonces
+    TPM-->>ESYS: Session handle + nonce_tpm
+    ESYS->>ESYS: Derive session key (same as TPM)
+    ESYS-->>App: session
+
+    Note over App,TPM: Step 5: Enable Encryption
+    App->>ESYS: Esys_TRSess_SetAttributes(ENCRYPT | DECRYPT)
+    ESYS-->>App: Session ready
+
+    Note over App,TPM: All future commands use<br/>AES-128-CFB encryption
+        </pre>
+    </div>
+
+    <!-- Code Mapping -->
+    <h2>5. Code Implementation</h2>
+
+    <div class="description">
+        <strong>File:</strong> <code>source/tss_session.cpp</code>
+    </div>
+
+    <table>
+        <tr>
+            <th>Step</th>
+            <th>ESYS Function</th>
+            <th>Purpose</th>
+        </tr>
+        <tr>
+            <td>1</td>
+            <td><code>Esys_Initialize()</code></td>
+            <td>Connect to TPM via TCTI</td>
+        </tr>
+        <tr>
+            <td>2</td>
+            <td><code>Esys_TR_FromTPMPublic()</code></td>
+            <td>Load persistent key handle</td>
+        </tr>
+        <tr>
+            <td>3</td>
+            <td><code>Esys_CreatePrimary()</code></td>
+            <td>Create EK in Endorsement hierarchy</td>
+        </tr>
+        <tr>
+            <td>4</td>
+            <td><code>Esys_StartAuthSession()</code></td>
+            <td>Start HMAC session salted with EK</td>
+        </tr>
+        <tr>
+            <td>5</td>
+            <td><code>Esys_TRSess_SetAttributes()</code></td>
+            <td>Enable ENCRYPT + DECRYPT flags</td>
+        </tr>
+        <tr>
+            <td>Use</td>
+            <td><code>Esys_RSA_Decrypt()</code></td>
+            <td>Decrypt with encrypted session</td>
+        </tr>
+    </table>
+
+    <h3>Session Attributes</h3>
+    <div class="diagram-container">
+        <pre class="mermaid">
+flowchart LR
+    subgraph ATTRS["TPMA_SESSION Flags"]
+        D["DECRYPT<br/>Encrypt TO TPM"]
+        E["ENCRYPT<br/>Encrypt FROM TPM"]
+        C["CONTINUESESSION<br/>Persist session"]
+    end
+
+    subgraph EFFECT["Effect"]
+        D --> E1["Commands encrypted<br/>on bus"]
+        E --> E2["Responses encrypted<br/>on bus"]
+        C --> E3["Session survives<br/>multiple commands"]
+    end
+
+    style D fill:#9b59b6,color:#fff
+    style E fill:#9b59b6,color:#fff
+    style C fill:#9b59b6,color:#fff
+        </pre>
+    </div>
+
+    <!-- Encryption Details -->
+    <h2>6. Encryption Algorithm</h2>
+
+    <div class="description">
+        Sessions use <strong>AES-128-CFB</strong> (Cipher Feedback Mode) for symmetric encryption.
+    </div>
+
+    <table>
+        <tr>
+            <th>Parameter</th>
+            <th>Value</th>
+            <th>Notes</th>
+        </tr>
+        <tr>
+            <td>Algorithm</td>
+            <td>AES</td>
+            <td>Advanced Encryption Standard</td>
+        </tr>
+        <tr>
+            <td>Key Size</td>
+            <td>128 bits</td>
+            <td>Derived from session key</td>
+        </tr>
+        <tr>
+            <td>Mode</td>
+            <td>CFB</td>
+            <td>Cipher Feedback - stream cipher mode</td>
+        </tr>
+        <tr>
+            <td>Session Hash</td>
+            <td>SHA-256</td>
+            <td>For HMAC and key derivation</td>
+        </tr>
+    </table>
+
+    <!-- What's Protected -->
+    <h2>7. What's Protected</h2>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+flowchart TB
+    subgraph PROTECTED["Protected by Encrypted Session"]
+        P1["RSA decrypt commands"]
+        P2["Decrypted passphrases"]
+        P3["All command parameters"]
+        P4["All response data"]
+    end
+
+    subgraph VISIBLE["Still Visible on Bus"]
+        V1["Session handle"]
+        V2["Encrypted blobs"]
+        V3["Command structure"]
+        V4["Timing patterns"]
+    end
+
+    subgraph ATTACKER["Attacker Can See"]
+        A1["That TPM is being used"]
+        A2["Approximate data sizes"]
+        A3["Operation frequency"]
+    end
+
+    subgraph CANNOT["Attacker CANNOT See"]
+        C1["Passphrase content"]
+        C2["Key material"]
+        C3["Any decrypted data"]
+    end
+
+    PROTECTED --> CANNOT
+    VISIBLE --> ATTACKER
+
+    style P1 fill:#28a745,color:#fff
+    style P2 fill:#28a745,color:#fff
+    style P3 fill:#28a745,color:#fff
+    style P4 fill:#28a745,color:#fff
+    style C1 fill:#28a745,color:#fff
+    style C2 fill:#28a745,color:#fff
+    style C3 fill:#28a745,color:#fff
+    style V1 fill:#ffc107,color:#000
+    style V2 fill:#ffc107,color:#000
+    style V3 fill:#ffc107,color:#000
+    style V4 fill:#ffc107,color:#000
+        </pre>
+    </div>
+
+    <!-- TSS2 Stack -->
+    <h2>8. TSS2 Library Stack</h2>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+flowchart TB
+    subgraph APP["Application Layer"]
+        KV["KeyVault"]
+        TS["TssSession"]
+    end
+
+    subgraph TSS["TSS2 Stack"]
+        ESYS["ESYS<br/>(Enhanced System API)<br/>Manages sessions, encryption"]
+        SYS["SYS<br/>(System API)<br/>Raw TPM commands"]
+        TCTI["TCTI<br/>(TPM Command Interface)<br/>Transport layer"]
+    end
+
+    subgraph DEVICE["Device Layer"]
+        RM["/dev/tpmrm0<br/>(Kernel Resource Manager)"]
+        TPM["TPM2 Hardware"]
+    end
+
+    KV --> TS
+    TS --> ESYS
+    ESYS --> SYS
+    SYS --> TCTI
+    TCTI --> RM
+    RM --> TPM
+
+    style ESYS fill:#9b59b6,color:#fff
+    style TS fill:#9b59b6,color:#fff
+        </pre>
+    </div>
+
+    <div class="security-note">
+        <strong>Key Point:</strong> ESYS handles all session encryption/decryption automatically.
+        The application just passes the session handle to commands.
+    </div>
+
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'default',
+            securityLevel: 'loose',
+            sequence: {
+                diagramMarginX: 50,
+                diagramMarginY: 10,
+                actorMargin: 50,
+                width: 150,
+                height: 65,
+                useMaxWidth: true
+            },
+            flowchart: {
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis'
+            }
+        });
+    </script>
+</body>
+</html>

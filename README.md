@@ -15,6 +15,7 @@ Hardware-bound key management using TPM2 for IoT platforms. Passphrases for user
 |----------|-------------|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Security architecture and threat model |
 | [TPM.md](TPM.md) | TPM2 implementation: EK, sessions, TSS2 stack |
+| [docs/](docs/) | Interactive diagrams (open in browser) |
 
 ## Quick Start
 

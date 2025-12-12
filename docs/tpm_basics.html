@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TPM2 RSA Key Operations - Sequence Diagrams</title>
+    <title>TPM2 Basics - Key Operations</title>
     <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
     <style>
         body {
@@ -59,8 +59,9 @@
     </style>
 </head>
 <body>
-    <h1>TPM2 RSA Key Operations</h1>
-    <p>Interactive sequence diagrams showing how TPM2 manages RSA keys and performs cryptographic operations.</p>
+    <h1>TPM2 Basics</h1>
+    <p>Basic TPM2 concepts: key provisioning, signing, decryption, and key hierarchy.</p>
+    <p><strong>See also:</strong> <a href="keyvault_flow.html">KeyVault C++ Implementation</a> | <a href="tss_session.html">Encrypted Sessions</a></p>
 
     <!-- Key Provisioning -->
     <h2>1. Key Provisioning (Factory Setup)</h2>
@@ -281,8 +282,13 @@ flowchart TB
             RSAKey["RSA-2048 Key<br/>Handle: 0x81010002<br/>sign | decrypt"]
         end
 
+        subgraph EndorsementKeys["Endorsement Hierarchy Keys"]
+            EK["Endorsement Key (EK)<br/>Factory-burned<br/>Used for session salting"]
+        end
+
         Owner --> Primary
         Primary --> RSAKey
+        Endorsement --> EK
     end
 
     subgraph External["External (Disk)"]
@@ -295,9 +301,15 @@ flowchart TB
 
     style Seed fill:#ff6b6b,stroke:#c0392b,color:#fff
     style RSAKey fill:#4ecdc4,stroke:#16a085,color:#fff
+    style EK fill:#9b59b6,stroke:#8e44ad,color:#fff
     style PubKey fill:#95e1d3,stroke:#1abc9c
     style EncPriv fill:#f9ca24,stroke:#f39c12
         </pre>
+    </div>
+
+    <div class="security-note">
+        <strong>Endorsement Key (EK):</strong> Factory-burned key used for encrypted session establishment.
+        See <a href="tss_session.html">Encrypted Sessions</a> for details on EK-salted bus protection.
     </div>
 
     <!-- Runtime Usage -->
