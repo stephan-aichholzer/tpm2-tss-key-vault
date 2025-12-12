@@ -20,6 +20,12 @@ The system uses TPM2 (Trusted Platform Module) as the root of trust for protecti
 │  │  - Never used for encryption directly                │  │
 │  └───────────────────────────────────────────────────────┘  │
 │  ┌───────────────────────────────────────────────────────┐  │
+│  │  Storage Root Key (SRK)                               │  │
+│  │  - Created by system/owner                           │  │
+│  │  - Parent key for application keys                   │  │
+│  │  - Wraps/protects child key blobs                    │  │
+│  └───────────────────────────────────────────────────────┘  │
+│  ┌───────────────────────────────────────────────────────┐  │
 │  │  Application RSA Key (0x81010002)                     │  │
 │  │  - Created during provisioning (init.sh)             │  │
 │  │  - Persistent in TPM NV storage                      │  │
@@ -27,6 +33,71 @@ The system uses TPM2 (Trusted Platform Module) as the root of trust for protecti
 │  └───────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+## EK vs SRK: Two Different Purposes
+
+The TPM has two fundamental keys that serve completely different purposes:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         TPM2 Chip                                   │
+│                                                                     │
+│   ENDORSEMENT KEY (EK)              STORAGE ROOT KEY (SRK)          │
+│   ─────────────────────             ──────────────────────          │
+│                                                                     │
+│   "Who am I?"                       "Protect my stuff"              │
+│                                                                     │
+│   ┌─────────────┐                   ┌─────────────┐                 │
+│   │     EK      │                   │     SRK     │                 │
+│   │  (identity) │                   │  (storage)  │                 │
+│   └──────┬──────┘                   └──────┬──────┘                 │
+│          │                                 │                        │
+│          ▼                                 ▼                        │
+│   • Session salting                 • Wrap app keys                 │
+│   • Remote attestation              • Key hierarchy root            │
+│   • TPM identity proof              • Encrypt key blobs             │
+│                                                                     │
+│          │                                 │                        │
+│          ▼                                 ▼                        │
+│   ┌─────────────┐                   ┌─────────────┐                 │
+│   │  Encrypted  │                   │  Your App   │                 │
+│   │   Session   │                   │    Keys     │                 │
+│   └─────────────┘                   └─────────────┘                 │
+│                                            │                        │
+│                                            ▼                        │
+│                                     ┌─────────────┐                 │
+│                                     │ 0x81010002  │ ← KeyVault      │
+│                                     └─────────────┘                 │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Comparison
+
+| | Endorsement Key (EK) | Storage Root Key (SRK) |
+|---|------------------------|----------------------|
+| **Purpose** | Identity + session key agreement | Wrap/protect other keys |
+| **Created by** | Factory-burned seed (chip manufacturer) | TPM owner (you/system) |
+| **Can encrypt external data?** | No (`restricted`) | No (`restricted`) |
+| **Can sign external data?** | No | No |
+| **Primary use** | Prove "I am THIS TPM" | Parent for your app keys |
+| **Hierarchy** | Endorsement (0x81010xxx) | Owner (0x81000xxx) |
+
+### What `restricted` Means
+
+Both EK and SRK have the `restricted` attribute, meaning they can **only** operate on TPM-internal data:
+
+- **EK**: Can only decrypt session salts (TPM-generated challenges)
+- **SRK**: Can only wrap/unwrap child keys (TPM-internal key blobs)
+
+Your **application key** (0x81010002) does NOT have `restricted`, so it can encrypt/decrypt external data (like passphrases).
+
+### How KeyVault Uses Both
+
+| Key | Role in KeyVault |
+|-----|------------------|
+| **EK** | Salt encrypted sessions → protects bus communication |
+| **SRK** | Parent of RSA key → protects key blob on disk |
+| **0x81010002** | Encrypts/decrypts passphrases → your actual work key |
 
 ## Endorsement Key (EK)
 
