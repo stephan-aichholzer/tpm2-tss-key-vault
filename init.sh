@@ -22,6 +22,7 @@
 #   ./init.sh --check              # Check if key already exists
 #   ./init.sh --list               # List all persistent handles in use
 #   ./init.sh --handle 0x81010003  # Use a specific handle
+#   ./init.sh --clear              # Remove KeyVault key from TPM
 #
 # Security Note:
 #   The private key is generated INSIDE the TPM and NEVER leaves the chip.
@@ -183,6 +184,57 @@ remove_existing_key() {
     echo "       Removing existing key..."
     tpm2_evictcontrol -C o -c "$TPM_HANDLE" 2>/dev/null || true
     echo "       Key removed"
+}
+
+clear_keyvault_key() {
+    echo ""
+    echo "Clearing KeyVault key at $TPM_HANDLE..."
+    echo ""
+
+    # Check if key exists
+    if ! tpm2_readpublic -c "$TPM_HANDLE" &> /dev/null; then
+        echo "No key found at $TPM_HANDLE - nothing to clear"
+        return 1
+    fi
+
+    # Check if it's our key (unless --force)
+    if [ "$FORCE" != true ]; then
+        if ! is_keyvault_key "$TPM_HANDLE"; then
+            echo "  ┌─────────────────────────────────────────────────────────────┐"
+            echo "  │  WARNING: Key at $TPM_HANDLE doesn't look like KeyVault!    │"
+            echo "  │                                                             │"
+            echo "  │  This may belong to another application.                    │"
+            echo "  │  Use --force --clear if you're SURE you want to remove it.  │"
+            echo "  └─────────────────────────────────────────────────────────────┘"
+            return 2
+        fi
+    fi
+
+    # Remove the key
+    if tpm2_evictcontrol -C o -c "$TPM_HANDLE" 2>/dev/null; then
+        echo "Key removed from TPM at $TPM_HANDLE"
+
+        # Also clean up local files if they exist
+        if [ -f "$PUBLIC_KEY_PEM" ]; then
+            rm -f "$PUBLIC_KEY_PEM"
+            echo "Removed: $PUBLIC_KEY_PEM"
+        fi
+        if [ -f "$EK_CTX" ]; then
+            rm -f "$EK_CTX"
+            echo "Removed: $EK_CTX"
+        fi
+        if [ -f "$EK_PUB" ]; then
+            rm -f "$EK_PUB"
+            echo "Removed: $EK_PUB"
+        fi
+
+        echo ""
+        echo "KeyVault cleared. Run ./init.sh to re-provision."
+        return 0
+    else
+        echo "ERROR: Failed to remove key"
+        return 1
+    fi
 }
 
 create_ek() {
@@ -355,10 +407,17 @@ show_usage() {
     echo ""
     echo "Options:"
     echo "  --check              Check if key exists (exit 0 if yes, 1 if no)"
-    echo "  --force              Remove existing key and create new one"
+    echo "  --clear              Remove KeyVault key from TPM and clean up files"
+    echo "  --force              Force operation (overwrite/remove without safety checks)"
     echo "  --list               List all persistent handles currently in use"
     echo "  --handle 0x810100XX  Use a specific handle (default: $DEFAULT_HANDLE)"
     echo "  --help               Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  $0                   # Provision new key at default handle"
+    echo "  $0 --list            # See what's in the TPM"
+    echo "  $0 --clear           # Remove KeyVault key and files"
+    echo "  $0 --handle 0x81010003 --clear  # Remove key at specific handle"
     echo ""
     echo "Handle ranges (by convention):"
     echo "  0x81000000-0x810000FF  Owner hierarchy (SRK, system keys)"
@@ -377,6 +436,7 @@ print_banner
 FORCE=false
 CHECK_ONLY=false
 LIST_ONLY=false
+CLEAR_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -386,6 +446,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --check)
             CHECK_ONLY=true
+            shift
+            ;;
+        --clear)
+            CLEAR_MODE=true
             shift
             ;;
         --list)
@@ -424,6 +488,11 @@ if [ "$LIST_ONLY" = true ]; then
     echo "Target handle: $TPM_HANDLE"
     echo ""
     exit 0
+fi
+
+# Clear mode
+if [ "$CLEAR_MODE" = true ]; then
+    clear_keyvault_key && exit 0 || exit $?
 fi
 
 # Check only mode
