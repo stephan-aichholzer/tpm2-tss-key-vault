@@ -99,8 +99,8 @@ source/build/
 
 | Binary | Description |
 |--------|-------------|
-| `tpm_example` | Simple demo using OpenSSL tpm2 provider for sign/decrypt |
-| `key_vault_example` | Full implementation with TSS2 encrypted sessions, process hardening, and SecureBuffer |
+| `tpm_example` | Basic demo using OpenSSL tpm2 provider only (no encrypted sessions, no hardening) |
+| `key_vault_example` | Full implementation: TSS2 EK-salted encrypted sessions, process hardening, SecureBuffer |
 
 ## Troubleshooting
 
