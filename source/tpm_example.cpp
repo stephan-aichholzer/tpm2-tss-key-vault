@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <vector>
 #include <string>
 #include <cstring>
@@ -242,8 +243,29 @@ bool verify_signature(EVP_PKEY* pkey, const std::string& data, const std::vector
     return result;
 }
 
+// Helper: Check if file exists
+bool file_exists(const std::string& path) {
+    std::ifstream f(path);
+    return f.good();
+}
+
 int main() {
     std::cout << "=== TPM2 OpenSSL Example ===" << std::endl << std::endl;
+
+    // Check required files exist
+    if (!file_exists(PUBLIC_KEY_FILE)) {
+        std::cerr << "ERROR: Missing " << PUBLIC_KEY_FILE << std::endl;
+        std::cerr << std::endl;
+        std::cerr << "Required files not found. Make sure you:" << std::endl;
+        std::cerr << "  1. Run from the project root directory (where keys/ exists)" << std::endl;
+        std::cerr << "  2. Have run ./init.sh to provision the TPM" << std::endl;
+        std::cerr << std::endl;
+        std::cerr << "Example:" << std::endl;
+        std::cerr << "  cd /path/to/tpm2" << std::endl;
+        std::cerr << "  ./init.sh" << std::endl;
+        std::cerr << "  ./source/build/tpm_example" << std::endl;
+        return 1;
+    }
 
     // Load TPM2 and default providers
     OSSL_PROVIDER* tpm2_prov = OSSL_PROVIDER_load(NULL, "tpm2");

@@ -37,9 +37,44 @@ void create_test_pem(const std::string& path, const std::string& passphrase) {
     std::cout << "   Created: " << path << std::endl;
 }
 
+// Helper: Check if file exists
+bool file_exists(const std::string& path) {
+    std::ifstream f(path);
+    return f.good();
+}
+
 int main() {
     std::cout << "=== KeyVault Example (Hardened) ===" << std::endl;
     std::cout << "TPM-protected passphrase storage with process hardening\n" << std::endl;
+
+    const uint32_t TPM_HANDLE = 0x81010002;
+    const std::string PUBKEY_PATH = "keys/tpm_rsa_pub.pem";
+    const std::string EK_CTX_PATH = "keys/ek.ctx";
+
+    // =========================================================================
+    // Check required files exist BEFORE doing anything
+    // =========================================================================
+    bool missing = false;
+    if (!file_exists(PUBKEY_PATH)) {
+        std::cerr << "ERROR: Missing " << PUBKEY_PATH << std::endl;
+        missing = true;
+    }
+    if (!file_exists(EK_CTX_PATH)) {
+        std::cerr << "ERROR: Missing " << EK_CTX_PATH << std::endl;
+        missing = true;
+    }
+    if (missing) {
+        std::cerr << std::endl;
+        std::cerr << "Required files not found. Make sure you:" << std::endl;
+        std::cerr << "  1. Run from the project root directory (where keys/ exists)" << std::endl;
+        std::cerr << "  2. Have run ./init.sh to provision the TPM" << std::endl;
+        std::cerr << std::endl;
+        std::cerr << "Example:" << std::endl;
+        std::cerr << "  cd /path/to/tpm2" << std::endl;
+        std::cerr << "  ./init.sh" << std::endl;
+        std::cerr << "  ./source/build/key_vault_example" << std::endl;
+        return 1;
+    }
 
     // =========================================================================
     // STEP 0: Harden the process BEFORE any secrets are loaded
@@ -48,10 +83,6 @@ int main() {
     auto hardening = harden_process();
     print_hardening_status(hardening);
     std::cout << std::endl;
-
-    const uint32_t TPM_HANDLE = 0x81010002;
-    const std::string PUBKEY_PATH = "keys/tpm_rsa_pub.pem";
-    const std::string EK_CTX_PATH = "keys/ek.ctx";
 
     try {
         // =====================================================================
