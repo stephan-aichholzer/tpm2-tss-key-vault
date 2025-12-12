@@ -17,9 +17,11 @@
 #   - tpm2-tools package installed
 #
 # Usage:
-#   ./init.sh              # Normal initialization
-#   ./init.sh --force      # Remove existing key and recreate
-#   ./init.sh --check      # Check if key already exists
+#   ./init.sh                      # Normal initialization
+#   ./init.sh --force              # Remove existing key and recreate
+#   ./init.sh --check              # Check if key already exists
+#   ./init.sh --list               # List all persistent handles in use
+#   ./init.sh --handle 0x81010003  # Use a specific handle
 #
 # Security Note:
 #   The private key is generated INSIDE the TPM and NEVER leaves the chip.
@@ -36,8 +38,12 @@ set -e  # Exit on error
 # Configuration
 # =============================================================================
 
-# TPM handle for the root RSA key
-TPM_HANDLE="0x81010002"
+# Default TPM handle for the root RSA key (can be overridden with --handle)
+DEFAULT_HANDLE="0x81010002"
+TPM_HANDLE="$DEFAULT_HANDLE"
+
+# KeyVault signature - used to identify keys we created
+KEYVAULT_MARKER="KeyVault"
 
 # Output directory for key files
 KEY_DIR="keys"
@@ -92,15 +98,84 @@ check_prerequisites() {
     echo "       Prerequisites OK"
 }
 
+list_persistent_handles() {
+    echo ""
+    echo "Persistent handles currently in use:"
+    echo "─────────────────────────────────────────────────────────────────"
+
+    local handles=$(tpm2_getcap handles-persistent 2>/dev/null | grep "0x" | tr -d ' -')
+
+    if [ -z "$handles" ]; then
+        echo "  (none)"
+    else
+        printf "  %-14s  %-8s  %-6s  %s\n" "Handle" "Type" "Bits" "Attributes"
+        echo "  ─────────────────────────────────────────────────────────────"
+
+        for handle in $handles; do
+            local info=$(tpm2_readpublic -c "$handle" 2>/dev/null)
+            local type=$(echo "$info" | grep -A1 "^type:" | tail -1 | sed 's/.*value: //')
+            local bits=$(echo "$info" | grep "^bits:" | awk '{print $2}')
+            local attrs=$(echo "$info" | grep -A1 "^attributes:" | tail -1 | sed 's/.*value: //' | cut -c1-30)
+
+            # Check if this is our target handle
+            if [ "$handle" = "$TPM_HANDLE" ]; then
+                printf "  %-14s  %-8s  %-6s  %s  ← target\n" "$handle" "$type" "$bits" "$attrs"
+            else
+                printf "  %-14s  %-8s  %-6s  %s\n" "$handle" "$type" "$bits" "$attrs"
+            fi
+        done
+    fi
+    echo ""
+}
+
+is_keyvault_key() {
+    # Check if the key at the given handle looks like a KeyVault key
+    # We identify by: RSA-2048, has decrypt+sign attributes
+    local handle="$1"
+    local info=$(tpm2_readpublic -c "$handle" 2>/dev/null)
+
+    if [ -z "$info" ]; then
+        return 1  # No key at handle
+    fi
+
+    local type=$(echo "$info" | grep -A1 "^type:" | tail -1 | sed 's/.*value: //')
+    local bits=$(echo "$info" | grep "^bits:" | awk '{print $2}')
+    local attrs=$(echo "$info" | grep -A1 "^attributes:" | tail -1 | sed 's/.*value: //')
+
+    # Check if it matches our KeyVault key profile
+    if [[ "$type" == "rsa" && "$bits" == "2048" && "$attrs" == *"decrypt"* && "$attrs" == *"sign"* ]]; then
+        return 0  # Looks like ours
+    fi
+
+    return 1  # Doesn't match our profile
+}
+
 check_existing_key() {
-    echo "[2/7] Checking for existing key at $TPM_HANDLE..."
+    echo "[3/8] Checking for existing key at $TPM_HANDLE..."
 
     if tpm2_readpublic -c "$TPM_HANDLE" &> /dev/null; then
-        echo "       Key already exists at $TPM_HANDLE"
-        return 0
+        if is_keyvault_key "$TPM_HANDLE"; then
+            echo "       KeyVault key exists at $TPM_HANDLE"
+            return 0  # Our key exists
+        else
+            echo ""
+            echo "  ┌─────────────────────────────────────────────────────────────┐"
+            echo "  │  WARNING: Handle $TPM_HANDLE is OCCUPIED by unknown key!    │"
+            echo "  │                                                             │"
+            echo "  │  This may belong to another application. Overwriting it     │"
+            echo "  │  could break other software on this system.                 │"
+            echo "  │                                                             │"
+            echo "  │  Options:                                                   │"
+            echo "  │    1. Use --handle 0x810100XX to pick a different handle    │"
+            echo "  │    2. Use --list to see all handles in use                  │"
+            echo "  │    3. Use --force if you're SURE you want to overwrite      │"
+            echo "  └─────────────────────────────────────────────────────────────┘"
+            echo ""
+            return 2  # Occupied by unknown key
+        fi
     else
-        echo "       No existing key found"
-        return 1
+        echo "       Handle $TPM_HANDLE is available"
+        return 1  # Handle is free
     fi
 }
 
@@ -111,7 +186,7 @@ remove_existing_key() {
 }
 
 create_ek() {
-    echo "[3/7] Creating Endorsement Key (EK) context..."
+    echo "[4/8] Creating Endorsement Key (EK) context..."
 
     # Create/load EK - used for encrypted session key agreement
     # The EK is derived from TPM's burned-in seed (same every time)
@@ -126,7 +201,7 @@ create_ek() {
 }
 
 create_primary_key() {
-    echo "[4/7] Creating primary storage key..."
+    echo "[5/8] Creating primary storage key..."
 
     # Create primary key under owner hierarchy
     # This key is derived from TPM's internal seed (deterministic)
@@ -141,7 +216,7 @@ create_primary_key() {
 }
 
 create_rsa_key() {
-    echo "[5/7] Creating RSA-2048 key with sign+decrypt attributes..."
+    echo "[6/8] Creating RSA-2048 key with sign+decrypt attributes..."
 
     # Create RSA key with the following attributes:
     #   fixedtpm           - Key can only be used on this TPM
@@ -162,7 +237,7 @@ create_rsa_key() {
 }
 
 load_and_persist_key() {
-    echo "[6/7] Loading and persisting key at $TPM_HANDLE..."
+    echo "[7/8] Loading and persisting key at $TPM_HANDLE..."
 
     # Load key into TPM
     tpm2_load \
@@ -183,7 +258,7 @@ load_and_persist_key() {
 }
 
 export_public_key() {
-    echo "[7/7] Exporting public key to $PUBLIC_KEY_PEM..."
+    echo "[8/8] Exporting public key to $PUBLIC_KEY_PEM..."
 
     # Create output directory if needed
     mkdir -p "$KEY_DIR"
@@ -264,9 +339,9 @@ print_summary() {
     echo "  - Protects bus communication against sniffing"
     echo ""
     echo "Next Steps:"
-    echo "  1. Build the C++ examples: cd build && cmake .. && make"
-    echo "  2. Run basic test: ./tpm_example"
-    echo "  3. Run full demo: ./key_vault_example"
+    echo "  1. Build: mkdir -p source/build && cd source/build && cmake .. && make"
+    echo "  2. From project root, run: ./source/build/tpm_example"
+    echo "  3. Full demo: ./source/build/key_vault_example"
     echo ""
     echo "Security Note:"
     echo "  The private key exists ONLY inside the TPM chip."
@@ -279,9 +354,16 @@ show_usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --check    Check if key exists (exit 0 if yes, 1 if no)"
-    echo "  --force    Remove existing key and create new one"
-    echo "  --help     Show this help message"
+    echo "  --check              Check if key exists (exit 0 if yes, 1 if no)"
+    echo "  --force              Remove existing key and create new one"
+    echo "  --list               List all persistent handles currently in use"
+    echo "  --handle 0x810100XX  Use a specific handle (default: $DEFAULT_HANDLE)"
+    echo "  --help               Show this help message"
+    echo ""
+    echo "Handle ranges (by convention):"
+    echo "  0x81000000-0x810000FF  Owner hierarchy (SRK, system keys)"
+    echo "  0x81010000-0x810100FF  Endorsement hierarchy (EK, app keys)"
+    echo "  0x81800000-0x818000FF  Platform hierarchy (firmware)"
     echo ""
 }
 
@@ -294,6 +376,7 @@ print_banner
 # Parse arguments
 FORCE=false
 CHECK_ONLY=false
+LIST_ONLY=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -304,6 +387,24 @@ while [[ $# -gt 0 ]]; do
         --check)
             CHECK_ONLY=true
             shift
+            ;;
+        --list)
+            LIST_ONLY=true
+            shift
+            ;;
+        --handle)
+            if [[ -z "$2" || "$2" == --* ]]; then
+                echo "ERROR: --handle requires a value (e.g., --handle 0x81010003)"
+                exit 1
+            fi
+            # Validate handle format
+            if [[ ! "$2" =~ ^0x81[0-9a-fA-F]{6}$ ]]; then
+                echo "ERROR: Invalid handle format: $2"
+                echo "       Expected format: 0x81XXXXXX (e.g., 0x81010002)"
+                exit 1
+            fi
+            TPM_HANDLE="$2"
+            shift 2
             ;;
         --help)
             show_usage
@@ -317,13 +418,25 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# List only mode
+if [ "$LIST_ONLY" = true ]; then
+    list_persistent_handles
+    echo "Target handle: $TPM_HANDLE"
+    echo ""
+    exit 0
+fi
+
 # Check only mode
 if [ "$CHECK_ONLY" = true ]; then
-    if check_existing_key; then
+    check_existing_key && result=0 || result=$?
+    if [ $result -eq 0 ]; then
         echo ""
-        echo "Key exists at $TPM_HANDLE"
+        echo "KeyVault key exists at $TPM_HANDLE"
         echo "Public key: $PUBLIC_KEY_PEM"
         exit 0
+    elif [ $result -eq 2 ]; then
+        echo "Handle occupied by unknown key"
+        exit 2
     else
         echo ""
         echo "No key at $TPM_HANDLE"
@@ -334,19 +447,47 @@ fi
 # Normal provisioning
 check_prerequisites
 
-if check_existing_key; then
+# Show what's currently in use
+echo ""
+echo "[2/8] Scanning TPM persistent storage..."
+list_persistent_handles
+
+check_existing_key && key_status=0 || key_status=$?
+
+if [ $key_status -eq 0 ]; then
+    # Our key exists
     if [ "$FORCE" = true ]; then
-        echo ""
-        echo "WARNING: --force specified, removing existing key"
+        echo "WARNING: --force specified, removing existing KeyVault key"
         remove_existing_key
     else
         echo ""
-        echo "Key already provisioned!"
+        echo "KeyVault key already provisioned!"
         echo "Use --force to remove and recreate, or --check to verify"
         print_summary
         exit 0
     fi
+elif [ $key_status -eq 2 ]; then
+    # Handle occupied by unknown key
+    if [ "$FORCE" = true ]; then
+        echo "WARNING: --force specified, OVERWRITING unknown key!"
+        echo "         (Hope you know what you're doing...)"
+        remove_existing_key
+    else
+        echo "Aborting to avoid overwriting unknown key."
+        echo ""
+        echo "Suggested free handles:"
+        # Find a few free handles to suggest
+        for try_handle in 0x81010002 0x81010003 0x81010004 0x81010005; do
+            if ! tpm2_readpublic -c "$try_handle" &> /dev/null; then
+                echo "  $try_handle  (available)"
+            fi
+        done
+        echo ""
+        echo "Use: $0 --handle 0x810100XX"
+        exit 1
+    fi
 fi
+# else: key_status -eq 1 means handle is free, proceed
 
 echo ""
 create_ek
