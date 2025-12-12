@@ -89,13 +89,18 @@ cd ../..
 
 ## Build Output
 
-After successful build:
+After successful build, two binaries are created:
 
 ```
 source/build/
-├── tpm_example         # Basic TPM sign/decrypt demo
-└── key_vault_example   # Full KeyVault with encrypted sessions
+├── tpm_example         # Basic TPM sign/decrypt using OpenSSL provider
+└── key_vault_example   # Full KeyVault with EK-salted encrypted sessions
 ```
+
+| Binary | Description |
+|--------|-------------|
+| `tpm_example` | Simple demo using OpenSSL tpm2 provider for sign/decrypt |
+| `key_vault_example` | Full implementation with TSS2 encrypted sessions, process hardening, and SecureBuffer |
 
 ## Troubleshooting
 
