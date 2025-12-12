@@ -76,15 +76,33 @@ make
 
 ### 4. Run
 
+**Important:** Run from the project root directory (where `keys/` folder exists).
+
 ```bash
-# From project root:
+# Go back to project root
 cd ../..
+
+# Verify you're in the right place
+ls keys/
+# Should show: ek.ctx  ek.pub  tpm_rsa_pub.pem  ...
 
 # Basic TPM test
 ./source/build/tpm_example
 
 # Full KeyVault demo with process hardening
 ./source/build/key_vault_example
+```
+
+The binaries expect this directory structure:
+```
+tpm2-tss-key-vault/       <-- Run from here!
+├── keys/
+│   ├── tpm_rsa_pub.pem   # TPM public key
+│   ├── ek.ctx            # EK context (for key_vault_example)
+│   └── ...
+└── source/build/
+    ├── tpm_example
+    └── key_vault_example
 ```
 
 ## Build Output
