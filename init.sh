@@ -393,12 +393,13 @@ verify_key() {
 
     # Test sign operation
     echo "Sign test:"
-    echo "Hello TPM" | tpm2_sign \
+    echo "Hello TPM" > /tmp/test_msg_$$.txt
+    tpm2_sign \
         -c "$TPM_HANDLE" \
         -g sha256 \
         -o /tmp/test_sig_$$.bin \
-        - 2>/dev/null && echo "  Sign: OK" || echo "  Sign: FAILED"
-    rm -f /tmp/test_sig_$$.bin
+        /tmp/test_msg_$$.txt 2>/dev/null && echo "  Sign: OK" || echo "  Sign: FAILED"
+    rm -f /tmp/test_sig_$$.bin /tmp/test_msg_$$.txt
 
     # Test encrypt/decrypt
     echo ""
