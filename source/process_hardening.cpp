@@ -197,6 +197,13 @@ HardeningResult harden_process(const HardeningOptions& opts) {
         if (is_debugger_attached()) {
             result.debugger_detected = true;
             errors << "DEBUGGER DETECTED - security compromised; ";
+
+            /*
+             * PRODUCTION: Uncomment to abort when debugger detected
+             *
+             * std::cerr << "FATAL: Debugger detected - aborting for security" << std::endl;
+             * std::abort();
+             */
         }
 
         /*
@@ -213,6 +220,13 @@ HardeningResult harden_process(const HardeningOptions& opts) {
                 // Already being traced (debugger attached)
                 result.debugger_detected = true;
                 errors << "PTRACE_TRACEME failed (debugger attached?); ";
+
+                /*
+                 * PRODUCTION: Uncomment to abort when debugger detected
+                 *
+                 * std::cerr << "FATAL: Debugger detected - aborting for security" << std::endl;
+                 * std::abort();
+                 */
             } else {
                 errors << "PTRACE_TRACEME failed: " << strerror(errno) << "; ";
             }
