@@ -576,8 +576,69 @@ flowchart LR
         </pre>
     </div>
 
+    <!-- PCR Policy Flow -->
+    <h2>7. PCR Policy Session Flow</h2>
+
+    <div class="description">
+        <strong>Phase:</strong> When PCR policy is configured, the TPM requires a policy session and PCR verification.
+        <br><strong>See:</strong> <code>PCR_POLICY.md</code> for detailed documentation.
+    </div>
+
+    <div class="diagram-container">
+        <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant App as Application
+    participant KV as KeyVault
+    participant TSS as TssSession
+    participant TPM as TPM2 Chip
+
+    Note over App,TPM: Session type depends on PCR policy
+
+    App->>KV: Initialize KeyVault
+    KV->>KV: Read keys/pcr_policy file
+
+    alt No PCR Policy
+        KV->>TSS: Create HMAC session
+        TSS->>TPM: StartAuthSession(TPM2_SE_HMAC)
+    else PCR Policy Configured (e.g., PCR 16)
+        KV->>TSS: Create POLICY session
+        TSS->>TPM: StartAuthSession(TPM2_SE_POLICY)
+    end
+    TPM-->>TSS: Session handle
+
+    Note over App,TPM: During decrypt operation
+
+    App->>KV: decrypt(ciphertext)
+
+    alt PCR Policy Required
+        KV->>TSS: Satisfy PCR policy
+        TSS->>TPM: Esys_PolicyPCR(session, PCR_16)
+        TPM->>TPM: Check: PCR 16 matches expected value?
+
+        alt PCR Matches
+            TPM-->>TSS: Policy satisfied
+        else PCR Mismatch
+            TPM-->>TSS: TPM2_RC_POLICY_FAIL
+            TSS-->>KV: Error: policy check failed
+        end
+    end
+
+    KV->>TSS: RSA_Decrypt with session
+    TSS->>TPM: Esys_RSA_Decrypt (encrypted)
+    TPM-->>TSS: Plaintext (encrypted on bus)
+    TSS-->>KV: SecureBuffer(plaintext)
+    KV-->>App: Decrypted data
+        </pre>
+    </div>
+
+    <div class="warning-note">
+        <strong>PCR Value Requirement:</strong> Before running the application, the PCR must be extended
+        with the correct value (e.g., <code>./pcr.sh boot</code>). Otherwise the operation will fail.
+    </div>
+
     <!-- Complete Flow -->
-    <h2>7. Complete System Flow</h2>
+    <h2>8. Complete System Flow</h2>
 
     <div class="description">
         <strong>End-to-end:</strong> From factory provisioning to runtime operation.
@@ -586,12 +647,12 @@ flowchart LR
     <div class="diagram-container">
         <pre class="mermaid">
 flowchart TD
-    subgraph FACTORY["1. Factory Provisioning - init.sh"]
-        F1["./init.sh"] --> F2["tpm2_createprimary"]
-        F2 --> F3["tpm2_create RSA-2048"]
-        F3 --> F4["tpm2_load"]
+    subgraph FACTORY["1. Factory Provisioning"]
+        F1["./init.sh --pcr 16 --pcr-value SERIAL"] --> F2["tpm2_createprimary"]
+        F2 --> F3["Setup PCR policy (if specified)"]
+        F3 --> F4["tpm2_create RSA-2048"]
         F4 --> F5["tpm2_evictcontrol 0x81010002"]
-        F5 --> F6["tpm2_readpublic → keys/tpm_rsa_pub.pem"]
+        F5 --> F6["Export keys/tpm_rsa_pub.pem"]
     end
 
     subgraph UPLOAD["2. User Key Upload"]
@@ -600,31 +661,40 @@ flowchart TD
         U3 --> U4["Store ProtectedPassphrase in DB"]
     end
 
-    subgraph RUNTIME["3. Runtime Sign Operation"]
+    subgraph BOOT["3. Device Boot (if PCR policy)"]
+        B1["./pcr.sh boot"] --> B2["Extend PCR with saved value"]
+    end
+
+    subgraph RUNTIME["4. Runtime Sign Operation"]
         R1["harden_process()"] --> R2["KeyVault init"]
         R2 --> R3["Load ProtectedPassphrase from DB"]
         R3 --> R4["sign_with_protected_key()"]
-        R4 --> R5["TPM decrypts passphrase"]
-        R5 --> R6["Load encrypted PEM"]
-        R6 --> R7["Wipe passphrase"]
-        R7 --> R8["Sign data"]
-        R8 --> R9["EVP_PKEY_free()"]
-        R9 --> R10["Return signature"]
+        R4 --> R5["(PCR policy check if enabled)"]
+        R5 --> R6["TPM decrypts passphrase"]
+        R6 --> R7["Load encrypted PEM"]
+        R7 --> R8["Wipe passphrase"]
+        R8 --> R9["Sign data"]
+        R9 --> R10["EVP_PKEY_free()"]
+        R10 --> R11["Return signature"]
     end
 
     F6 --> U1
-    U4 --> R3
+    U4 --> B1
+    B2 --> R1
 
     style F1 fill:#007acc,color:#fff
     style F6 fill:#28a745,color:#fff
     style U1 fill:#007acc,color:#fff
     style U4 fill:#28a745,color:#fff
+    style B1 fill:#9b59b6,color:#fff
+    style B2 fill:#9b59b6,color:#fff
     style R1 fill:#28a745,color:#fff
-    style R10 fill:#28a745,color:#fff
-    style R5 fill:#ffc107,color:#000
-    style R6 fill:#dc3545,color:#fff
-    style R7 fill:#ffc107,color:#000
+    style R11 fill:#28a745,color:#fff
+    style R5 fill:#9b59b6,color:#fff
+    style R6 fill:#ffc107,color:#000
+    style R7 fill:#dc3545,color:#fff
     style R8 fill:#ffc107,color:#000
+    style R9 fill:#ffc107,color:#000
         </pre>
     </div>
 

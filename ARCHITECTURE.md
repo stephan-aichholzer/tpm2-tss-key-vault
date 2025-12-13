@@ -45,11 +45,12 @@ This system provides secure storage and usage of cryptographic keys for IoT devi
 |--------|---------------|------------|
 | **Device Theft** | Attacker steals device, extracts storage | TPM-bound encryption - data useless on other hardware |
 | **Disk Cloning** | Attacker copies SD card/SSD | Encrypted passphrases require original TPM |
+| **TPM Module Theft** | Attacker removes TPM, installs on own device | PCR policy binds key to platform identity (see [PCR_POLICY.md](PCR_POLICY.md)) |
 | **Database Breach** | Attacker dumps application database | Passphrase blobs encrypted, need TPM to decrypt |
 | **Bus Sniffing** | Logic analyzer on SPI/LPC bus | EK-salted encrypted sessions (see [TPM.md](TPM.md)) |
 | **Cold Boot Attack** | Freeze RAM, extract contents | mlock() prevents swap, brief exposure window |
 | **Core Dump Analysis** | Trigger crash, analyze dump | PR_SET_DUMPABLE=0 prevents dumps |
-| **Process Debugging** | ptrace attach to read memory | PR_SET_PTRACER restrictions, non-dumpable process |
+| **Process Debugging** | ptrace attach to read memory | PR_SET_PTRACER restrictions, debugger detection |
 | **/proc/mem Reading** | Read /proc/<pid>/mem | Requires CAP_SYS_PTRACE when non-dumpable |
 | **Swap File Analysis** | Read secrets from swap partition | mlock() keeps sensitive data in RAM only |
 
@@ -419,7 +420,16 @@ Source code is in `source/`:
 | File | Purpose |
 |------|---------|
 | `key_vault.h/cpp` | KeyVault API, SecureBuffer, ProtectedPassphrase |
-| `tss_session.h/cpp` | TSS2 encrypted session management |
-| `process_hardening.h/cpp` | Memory/process protection utilities |
+| `tss_session.h/cpp` | TSS2 encrypted session + PCR policy support |
+| `process_hardening.h/cpp` | Memory/process protection, debugger detection |
 
-See [TPM.md](TPM.md) for TSS2 implementation details.
+Shell scripts:
+
+| File | Purpose |
+|------|---------|
+| `init.sh` | TPM provisioning (with optional PCR policy) |
+| `pcr.sh` | PCR management (read, extend, reset, boot) |
+| `list.sh` | List TPM persistent handles |
+| `clear.sh` | Remove KeyVault key |
+
+See [TPM.md](TPM.md) for TPM concepts and [PCR_POLICY.md](PCR_POLICY.md) for platform binding.

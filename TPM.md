@@ -141,13 +141,15 @@ Session Key = KDF(salt || nonce_tss || nonce_tpm)
 
 ### Session Types
 
-TPM2 supports several session types. We use **HMAC sessions** with encryption:
+TPM2 supports several session types:
 
-| Session Type | Purpose |
-|--------------|---------|
-| `TPM2_SE_HMAC` | Command/response authentication + encryption |
-| `TPM2_SE_POLICY` | Policy-based authorization |
-| `TPM2_SE_TRIAL` | Policy testing without execution |
+| Session Type | Purpose | Used When |
+|--------------|---------|-----------|
+| `TPM2_SE_HMAC` | Authentication + encryption | Key without policy |
+| `TPM2_SE_POLICY` | Policy-based authorization | Key with PCR policy |
+| `TPM2_SE_TRIAL` | Policy testing without execution | During key creation |
+
+The KeyVault automatically selects the appropriate session type based on whether a PCR policy is configured. See [PCR_POLICY.md](PCR_POLICY.md) for platform binding details.
 
 ### Session Attributes
 
@@ -284,15 +286,34 @@ Application                    TSS2 Library                    TPM
 
 The `init.sh` script provisions the TPM for use. This is the **key moment** where hardware binding happens.
 
+### Usage
+
+```bash
+# Basic provisioning
+./init.sh
+
+# With PCR policy - binds key to platform identity
+./init.sh --pcr 16 --pcr-value "DEVICE-SERIAL-001"
+
+# Check existing keys
+./list.sh
+
+# Remove key for reprovisioning
+./clear.sh
+```
+
+For PCR policy details, see [PCR_POLICY.md](PCR_POLICY.md).
+
 ### Provisioning Steps Overview
 
 ```bash
 # Step 1-2: Prerequisites check (TPM accessible, tools installed)
 # Step 3:   Create EK context (for encrypted sessions)
 # Step 4:   Create primary storage key (SRK)
-# Step 5:   Create RSA key wrapped by SRK
-# Step 6:   Load and persist at 0x81010002
-# Step 7:   Export public key as PEM
+# Step 5:   (Optional) Setup PCR policy
+# Step 6:   Create RSA key wrapped by SRK (with policy if specified)
+# Step 7:   Load and persist at 0x81010002
+# Step 8:   Export public key as PEM
 ```
 
 ### Step 3: Create Endorsement Key Context

@@ -50,20 +50,27 @@ cd tpm2-tss-key-vault
 ### 2. Provision TPM (One-Time)
 
 ```bash
-# Creates persistent RSA key at handle 0x81010002
-bash init.sh
+# Basic provisioning (no PCR policy)
+./init.sh
 
-# To check if already provisioned:
-bash init.sh --check
+# With PCR policy - binds key to platform identity
+./init.sh --pcr 16 --pcr-value "DEVICE-SERIAL-001"
 
-# To recreate (removes existing key):
-bash init.sh --force
+# Check if already provisioned
+./list.sh
+
+# Remove existing key before reprovisioning
+./clear.sh
 ```
 
 This creates:
-- `keys/tpm_rsa_pub.pem` - Public key
-- `keys/ek.ctx` - Endorsement Key context
+- `keys/tpm_rsa_pub.pem` - Public key (for encryption)
+- `keys/ek.ctx` - Endorsement Key context (for sessions)
+- `keys/pcr_policy` - PCR index (if PCR policy enabled)
+- `keys/pcr_value` - Identity value (if PCR policy enabled)
 - Persistent key at `0x81010002`
+
+See [PCR_POLICY.md](PCR_POLICY.md) for PCR policy details.
 
 ### 3. Build
 
@@ -98,12 +105,15 @@ The binaries expect this directory structure:
 tpm2-tss-key-vault/       <-- Run from here!
 ├── keys/
 │   ├── tpm_rsa_pub.pem   # TPM public key
-│   ├── ek.ctx            # EK context (for key_vault_example)
-│   └── ...
+│   ├── ek.ctx            # EK context
+│   ├── pcr_policy        # PCR index (if enabled)
+│   └── pcr_value         # Identity value (if enabled)
 └── source/build/
     ├── tpm_example
     └── key_vault_example
 ```
+
+See [HOW_TO_RUN.md](HOW_TO_RUN.md) for usage examples including PCR policy demo.
 
 ## Build Output
 
@@ -149,10 +159,11 @@ groups | grep tss
 tpm2_getcap properties-fixed
 
 # Check for existing key
-tpm2_getcap handles-persistent
+./list.sh
 
-# Force recreate
-bash init.sh --force
+# Remove existing key and retry
+./clear.sh
+./init.sh
 ```
 
 ### Runtime errors
@@ -163,7 +174,10 @@ ls -la /dev/tpmrm0
 sudo systemctl status tpm2-abrmd
 
 # "Handle not found" - Key not provisioned
-bash init.sh
+./init.sh
+
+# "policy check failed" - PCR value mismatch
+./pcr.sh boot   # Restore PCR from config
 ```
 
 ## Clean Build
