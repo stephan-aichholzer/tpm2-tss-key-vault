@@ -423,7 +423,7 @@ Source code is in `source/`:
 | `tss_session.h/cpp` | TSS2 encrypted session + PCR policy support |
 | `process_hardening.h/cpp` | Memory/process protection, debugger detection |
 
-Shell scripts:
+Shell scripts (in `scripts/`):
 
 | File | Purpose |
 |------|---------|

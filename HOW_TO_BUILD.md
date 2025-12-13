@@ -51,16 +51,16 @@ cd tpm2-tss-key-vault
 
 ```bash
 # Basic provisioning (no PCR policy)
-./init.sh
+./scripts/init.sh
 
 # With PCR policy - binds key to platform identity
-./init.sh --pcr 16 --pcr-value "DEVICE-SERIAL-001"
+./scripts/init.sh --pcr 16 --pcr-value "DEVICE-SERIAL-001"
 
 # Check if already provisioned
-./list.sh
+./scripts/list.sh
 
 # Remove existing key before reprovisioning
-./clear.sh
+./scripts/clear.sh
 ```
 
 This creates:
@@ -159,11 +159,11 @@ groups | grep tss
 tpm2_getcap properties-fixed
 
 # Check for existing key
-./list.sh
+./scripts/list.sh
 
 # Remove existing key and retry
-./clear.sh
-./init.sh
+./scripts/clear.sh
+./scripts/init.sh
 ```
 
 ### Runtime errors
@@ -174,10 +174,10 @@ ls -la /dev/tpmrm0
 sudo systemctl status tpm2-abrmd
 
 # "Handle not found" - Key not provisioned
-./init.sh
+./scripts/init.sh
 
 # "policy check failed" - PCR value mismatch
-./pcr.sh boot   # Restore PCR from config
+./scripts/pcr.sh boot   # Restore PCR from config
 ```
 
 ## Clean Build

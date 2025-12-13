@@ -89,5 +89,5 @@ for f in "$PUBLIC_KEY_PEM" "$EK_CTX" "$EK_PUB" "$PCR_POLICY_FILE" "$PCR_VALUE_FI
 done
 
 echo ""
-echo "KeyVault cleared. Run ./init.sh to re-provision."
+echo "KeyVault cleared. Run ./scripts/init.sh to re-provision."
 echo ""

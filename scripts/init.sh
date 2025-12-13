@@ -78,9 +78,9 @@ show_usage() {
     echo "  $0 --force                            # Re-provision existing key"
     echo ""
     echo "Related tools:"
-    echo "  ./list.sh      List TPM persistent handles"
-    echo "  ./clear.sh     Remove KeyVault key"
-    echo "  ./pcr.sh       PCR management (extend/reset/read)"
+    echo "  ./scripts/list.sh      List TPM persistent handles"
+    echo "  ./scripts/clear.sh     Remove KeyVault key"
+    echo "  ./scripts/pcr.sh       PCR management (extend/reset/read)"
     echo ""
     echo "PCR Notes:"
     echo "  PCR 16: Debug PCR, software resettable (for testing)"
@@ -319,7 +319,7 @@ if [ -n "$PCR_NUM" ]; then
     echo "  Config:        $PCR_POLICY_FILE"
     echo ""
     echo "IMPORTANT: Before using KeyVault, PCR $PCR_NUM must be extended with"
-    echo "           the same value. Use: ./pcr.sh boot"
+    echo "           the same value. Use: ./scripts/pcr.sh boot"
 fi
 
 echo ""
@@ -335,7 +335,7 @@ fi
 echo ""
 echo "Next Steps:"
 if [ -n "$PCR_NUM" ]; then
-    echo "  1. On each boot, run: ./pcr.sh boot"
+    echo "  1. On each boot, run: ./scripts/pcr.sh boot"
     echo "  2. Then run KeyVault: ./source/build/key_vault_example"
 else
     echo "  1. Build: mkdir -p source/build && cd source/build && cmake .. && make"

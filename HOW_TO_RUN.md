@@ -4,7 +4,7 @@
 
 ```bash
 # Provision TPM key
-./init.sh
+./scripts/init.sh
 
 # Run demo
 ./source/build/key_vault_example
@@ -16,17 +16,17 @@
 
 ```bash
 # Clear any existing key
-./clear.sh
+./scripts/clear.sh
 
 # Provision with PCR policy (use device serial, MAC, etc.)
-./init.sh --pcr 16 --pcr-value "DEVICE-SERIAL-001"
+./scripts/init.sh --pcr 16 --pcr-value "DEVICE-SERIAL-001"
 ```
 
 ### Boot-Time Setup
 
 ```bash
 # Must run BEFORE KeyVault application starts
-./pcr.sh boot
+./scripts/pcr.sh boot
 ```
 
 ### Run Application
@@ -39,15 +39,15 @@
 
 ```bash
 # 1. Reset PCR and extend with wrong value
-./pcr.sh reset 16
-./pcr.sh extend 16 "ATTACKER-DEVICE"
+./scripts/pcr.sh reset 16
+./scripts/pcr.sh extend 16 "ATTACKER-DEVICE"
 
 # 2. Try to use KeyVault - FAILS
 ./source/build/key_vault_example
 # Error: tpm:session(1):a policy check failed
 
 # 3. Restore correct value
-./pcr.sh boot
+./scripts/pcr.sh boot
 
 # 4. Works again
 ./source/build/key_vault_example
@@ -57,20 +57,20 @@
 
 ```bash
 # List TPM handles
-./list.sh
+./scripts/list.sh
 
 # Read PCR values
-./pcr.sh read
-./pcr.sh read 16
+./scripts/pcr.sh read
+./scripts/pcr.sh read 16
 
 # Manually extend PCR
-./pcr.sh extend 16 "some-value"
+./scripts/pcr.sh extend 16 "some-value"
 
 # Reset PCR 16 (debug PCR only)
-./pcr.sh reset 16
+./scripts/pcr.sh reset 16
 
 # Remove KeyVault key
-./clear.sh
+./scripts/clear.sh
 ```
 
 ## PCR Notes

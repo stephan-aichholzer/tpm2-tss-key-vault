@@ -290,16 +290,16 @@ The `init.sh` script provisions the TPM for use. This is the **key moment** wher
 
 ```bash
 # Basic provisioning
-./init.sh
+./scripts/init.sh
 
 # With PCR policy - binds key to platform identity
-./init.sh --pcr 16 --pcr-value "DEVICE-SERIAL-001"
+./scripts/init.sh --pcr 16 --pcr-value "DEVICE-SERIAL-001"
 
 # Check existing keys
-./list.sh
+./scripts/list.sh
 
 # Remove key for reprovisioning
-./clear.sh
+./scripts/clear.sh
 ```
 
 For PCR policy details, see [PCR_POLICY.md](PCR_POLICY.md).

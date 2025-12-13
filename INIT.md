@@ -33,10 +33,10 @@ The private key never exists in plain form outside the TPM chip.
 ## Command Reference
 
 ```bash
-./init.sh                                    # Create key (first time)
-./init.sh --pcr 16 --pcr-value "SERIAL"     # Create with PCR policy
-./list.sh                                    # Show TPM handles
-./clear.sh                                   # Remove key and files
+./scripts/init.sh                                    # Create key (first time)
+./scripts/init.sh --pcr 16 --pcr-value "SERIAL"     # Create with PCR policy
+./scripts/list.sh                                    # Show TPM handles
+./scripts/clear.sh                                   # Remove key and files
 ```
 
 ## FAQ

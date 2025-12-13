@@ -258,11 +258,11 @@ int main() {
         std::cerr << std::endl;
         std::cerr << "Required files not found. Make sure you:" << std::endl;
         std::cerr << "  1. Run from the project root directory (where keys/ exists)" << std::endl;
-        std::cerr << "  2. Have run ./init.sh to provision the TPM" << std::endl;
+        std::cerr << "  2. Have run ./scripts/init.sh to provision the TPM" << std::endl;
         std::cerr << std::endl;
         std::cerr << "Example:" << std::endl;
         std::cerr << "  cd /path/to/tpm2" << std::endl;
-        std::cerr << "  ./init.sh" << std::endl;
+        std::cerr << "  ./scripts/init.sh" << std::endl;
         std::cerr << "  ./source/build/tpm_example" << std::endl;
         return 1;
     }

@@ -20,7 +20,7 @@ sudo apt install libtss2-dev libssl-dev cmake build-essential tpm2-tools
 mkdir -p source/build && cd source/build && cmake .. && make && cd ../..
 
 # Provision TPM (one-time)
-./init.sh
+./scripts/init.sh
 
 # Run demo
 ./source/build/key_vault_example
@@ -48,12 +48,13 @@ tpm2/
 │   ├── tss_session.h/cpp   # TSS2 encrypted sessions (EK-salted)
 │   ├── process_hardening.* # Memory/process protection
 │   └── *_example.cpp       # Demo applications
+├── scripts/                # Shell scripts
+│   ├── init.sh             # TPM provisioning
+│   ├── pcr.sh              # PCR management
+│   ├── list.sh             # List TPM handles
+│   ├── clear.sh            # Remove TPM key
+│   └── tpm_lib.sh          # Shared functions
 ├── keys/                   # Generated keys (by init.sh)
-├── init.sh                 # TPM provisioning script
-├── pcr.sh                  # PCR management tool
-├── list.sh                 # List TPM handles
-├── clear.sh                # Remove TPM key
-├── tpm_lib.sh              # Shared shell functions
 └── docs/                   # Mermaid diagrams (HTML)
 ```
 

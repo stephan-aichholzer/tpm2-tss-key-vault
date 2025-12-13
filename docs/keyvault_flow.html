@@ -634,7 +634,7 @@ sequenceDiagram
 
     <div class="warning-note">
         <strong>PCR Value Requirement:</strong> Before running the application, the PCR must be extended
-        with the correct value (e.g., <code>./pcr.sh boot</code>). Otherwise the operation will fail.
+        with the correct value (e.g., <code>./scripts/pcr.sh boot</code>). Otherwise the operation will fail.
     </div>
 
     <!-- Complete Flow -->
@@ -648,7 +648,7 @@ sequenceDiagram
         <pre class="mermaid">
 flowchart TD
     subgraph FACTORY["1. Factory Provisioning"]
-        F1["./init.sh --pcr 16 --pcr-value SERIAL"] --> F2["tpm2_createprimary"]
+        F1["./scripts/init.sh --pcr 16 --pcr-value SERIAL"] --> F2["tpm2_createprimary"]
         F2 --> F3["Setup PCR policy (if specified)"]
         F3 --> F4["tpm2_create RSA-2048"]
         F4 --> F5["tpm2_evictcontrol 0x81010002"]
@@ -662,7 +662,7 @@ flowchart TD
     end
 
     subgraph BOOT["3. Device Boot (if PCR policy)"]
-        B1["./pcr.sh boot"] --> B2["Extend PCR with saved value"]
+        B1["./scripts/pcr.sh boot"] --> B2["Extend PCR with saved value"]
     end
 
     subgraph RUNTIME["4. Runtime Sign Operation"]

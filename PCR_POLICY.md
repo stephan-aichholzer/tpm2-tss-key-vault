@@ -84,7 +84,7 @@ PCR 16:    Debug PCR, can reset without reboot (for testing)
 │     SERIAL="DEVICE-001-2024-FACTORY-A"                                 │
 │                                                                         │
 │  3. Run provisioning:                                                   │
-│     ./init.sh --pcr 14 --pcr-value "$SERIAL"                           │
+│     ./scripts/init.sh --pcr 14 --pcr-value "$SERIAL"                   │
 │                                                                         │
 │     This does:                                                          │
 │       a) Extend PCR 14 with SHA256(SERIAL)                             │
@@ -104,7 +104,7 @@ PCR 16:    Debug PCR, can reset without reboot (for testing)
 │  1. Device boots (PCRs reset to 0x000...)                              │
 │                                                                         │
 │  2. Early boot script runs (systemd service / init.d):                 │
-│     ./pcr.sh boot                                                       │
+│     ./scripts/pcr.sh boot                                               │
 │                                                                         │
 │     This reads keys/pcr_value and extends PCR with saved value         │
 │                                                                         │
@@ -143,26 +143,26 @@ For development and testing, use PCR 16 which can be reset without rebooting:
 
 ```bash
 # 1. Clear any existing key
-./clear.sh
+./scripts/clear.sh
 
 # 2. Provision with PCR 16 policy
-./init.sh --pcr 16 --pcr-value "DEMO-SERIAL-001"
+./scripts/init.sh --pcr 16 --pcr-value "DEMO-SERIAL-001"
 
 # 3. Test that key works
 ./source/build/key_vault_example    # Should work
 
 # 4. Simulate "reboot" (reset PCR)
-./pcr.sh reset 16
+./scripts/pcr.sh reset 16
 
 # 5. Extend with WRONG value (simulate different device)
-./pcr.sh extend 16 "WRONG-SERIAL"
+./scripts/pcr.sh extend 16 "WRONG-SERIAL"
 
 # 6. Try to use key - SHOULD FAIL
 ./source/build/key_vault_example    # TPM2_RC_POLICY_FAIL
 
 # 7. Reset and extend with correct value
-./pcr.sh reset 16
-./pcr.sh extend 16 "DEMO-SERIAL-001"
+./scripts/pcr.sh reset 16
+./scripts/pcr.sh extend 16 "DEMO-SERIAL-001"
 
 # 8. Key works again
 ./source/build/key_vault_example    # Should work
@@ -170,17 +170,19 @@ For development and testing, use PCR 16 which can be reset without rebooting:
 
 ## Scripts Reference
 
+All scripts are in the `scripts/` directory.
+
 ### init.sh
 
 Main provisioning script with PCR policy support:
 
 ```bash
 # Without PCR policy (backward compatible)
-./init.sh
+./scripts/init.sh
 
 # With PCR policy
-./init.sh --pcr 16 --pcr-value "DEVICE-SERIAL"
-./init.sh --pcr 14 --pcr-value "DEVICE-SERIAL"  # Production
+./scripts/init.sh --pcr 16 --pcr-value "DEVICE-SERIAL"
+./scripts/init.sh --pcr 14 --pcr-value "DEVICE-SERIAL"  # Production
 ```
 
 ### pcr.sh
@@ -188,11 +190,11 @@ Main provisioning script with PCR policy support:
 PCR management tool:
 
 ```bash
-./pcr.sh read              # Show common PCR values
-./pcr.sh read 16           # Show specific PCR
-./pcr.sh extend 16 "value" # Extend PCR with value
-./pcr.sh reset 16          # Reset PCR 16 (debug only)
-./pcr.sh boot              # Boot-time: restore from config
+./scripts/pcr.sh read              # Show common PCR values
+./scripts/pcr.sh read 16           # Show specific PCR
+./scripts/pcr.sh extend 16 "value" # Extend PCR with value
+./scripts/pcr.sh reset 16          # Reset PCR 16 (debug only)
+./scripts/pcr.sh boot              # Boot-time: restore from config
 ```
 
 ### list.sh
@@ -200,7 +202,7 @@ PCR management tool:
 Show TPM persistent handles:
 
 ```bash
-./list.sh
+./scripts/list.sh
 ```
 
 ### clear.sh
@@ -208,8 +210,8 @@ Show TPM persistent handles:
 Remove KeyVault key and config:
 
 ```bash
-./clear.sh
-./clear.sh --force         # Skip safety checks
+./scripts/clear.sh
+./scripts/clear.sh --force         # Skip safety checks
 ```
 
 ## Files
@@ -225,7 +227,7 @@ keys/
 └── pcr_value          # Identity value (e.g., "DEVICE-SERIAL")
 ```
 
-The `pcr_value` file is used by the boot script (`./pcr.sh boot`) to restore
+The `pcr_value` file is used by the boot script (`./scripts/pcr.sh boot`) to restore
 the PCR to the correct value on each boot.
 
 ## C++ Integration
@@ -290,14 +292,14 @@ Error: TPM2_RC_POLICY_FAIL
 ```
 
 The PCR value doesn't match the policy. Solutions:
-1. Run `./pcr.sh boot` to restore correct PCR value
-2. Check `./pcr.sh read` to see current PCR state
+1. Run `./scripts/pcr.sh boot` to restore correct PCR value
+2. Check `./scripts/pcr.sh read` to see current PCR state
 3. If PCR 14/15, device may need reboot
 
 ### PCR shows unexpected value
 
 ```bash
-./pcr.sh read 14
+./scripts/pcr.sh read 14
 # Shows non-zero value on fresh boot
 ```
 
