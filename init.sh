@@ -6,10 +6,12 @@
 # Run this ONCE during factory provisioning or initial device setup.
 #
 # What this script does:
-#   1. Creates a primary storage key in the TPM
-#   2. Creates an RSA-2048 key for encrypt/decrypt/sign operations
-#   3. Persists the key at handle 0x81010002
-#   4. Exports the public key as PEM for use by applications
+#   1. Creates Endorsement Key context (for encrypted sessions)
+#   2. Creates a primary storage key in the TPM
+#   3. Creates an RSA-2048 key for encrypt/decrypt/sign operations
+#   4. Optionally binds the key to a PCR policy (hardware identity)
+#   5. Persists the key at handle 0x81010002
+#   6. Exports the public key as PEM for use by applications
 #
 # Prerequisites:
 #   - TPM2 device accessible (/dev/tpm0 or /dev/tpmrm0)
@@ -17,483 +19,74 @@
 #   - tpm2-tools package installed
 #
 # Usage:
-#   ./init.sh                      # Normal initialization
-#   ./init.sh --force              # Remove existing key and recreate
-#   ./init.sh --check              # Check if key already exists
-#   ./init.sh --list               # List all persistent handles in use
-#   ./init.sh --handle 0x81010003  # Use a specific handle
-#   ./init.sh --clear              # Remove KeyVault key from TPM
+#   ./init.sh                                    # Normal initialization
+#   ./init.sh --pcr 16 --pcr-value "SERIAL"     # With PCR policy binding
+#   ./init.sh --force                            # Remove existing key and recreate
+#   ./init.sh --check                            # Check if key already exists
+#   ./init.sh --handle 0x81010003                # Use a specific handle
+#
+# Related tools:
+#   ./list.sh           List all persistent handles
+#   ./clear.sh          Remove KeyVault key from TPM
+#   ./pcr.sh            PCR management (extend, reset, read)
 #
 # Security Note:
 #   The private key is generated INSIDE the TPM and NEVER leaves the chip.
 #   Only the public key is exported to the filesystem.
 #
 # See Also:
-#   - README.md for detailed explanation of each step
-#   - CONCEPT_DOCUMENTATION.md for security architecture
+#   - PCR_POLICY.md for PCR binding documentation
+#   - INIT.md for detailed initialization explanation
 #
 
-set -e  # Exit on error
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source the library
+source "$SCRIPT_DIR/tpm_lib.sh"
+
+# Set up cleanup trap
+trap tpm_cleanup EXIT
 
 # =============================================================================
-# Configuration
+# Argument Parsing
 # =============================================================================
 
-# Default TPM handle for the root RSA key (can be overridden with --handle)
-DEFAULT_HANDLE="0x81010002"
-TPM_HANDLE="$DEFAULT_HANDLE"
-
-# KeyVault signature - used to identify keys we created
-KEYVAULT_MARKER="KeyVault"
-
-# Output directory for key files
-KEY_DIR="keys"
-
-# Temporary files (cleaned up on exit)
-PRIMARY_CTX="/tmp/tpm_primary_$$.ctx"
-KEY_PUB="/tmp/tpm_key_$$.pub"
-KEY_PRIV="/tmp/tpm_key_$$.priv"
-KEY_CTX="/tmp/tpm_key_$$.ctx"
-
-# Output files
-PUBLIC_KEY_PEM="${KEY_DIR}/tpm_rsa_pub.pem"
-EK_CTX="${KEY_DIR}/ek.ctx"
-EK_PUB="${KEY_DIR}/ek.pub"
-
-# =============================================================================
-# Functions
-# =============================================================================
-
-cleanup() {
-    # Remove temporary files
-    rm -f "$PRIMARY_CTX" "$KEY_PUB" "$KEY_PRIV" "$KEY_CTX" 2>/dev/null || true
-}
-
-trap cleanup EXIT
-
-print_banner() {
-    echo "========================================"
-    echo "  TPM2 Key Provisioning"
-    echo "========================================"
-    echo ""
-}
-
-check_prerequisites() {
-    echo "[1/7] Checking prerequisites..."
-
-    # Check for tpm2-tools
-    if ! command -v tpm2_createprimary &> /dev/null; then
-        echo "ERROR: tpm2-tools not installed"
-        echo "Install with: sudo apt install tpm2-tools"
-        exit 1
-    fi
-
-    # Check TPM access
-    if ! tpm2_getrandom 4 --hex &> /dev/null; then
-        echo "ERROR: Cannot access TPM"
-        echo "Ensure you are in the 'tss' group: sudo usermod -aG tss \$USER"
-        echo "Then log out and log back in"
-        exit 1
-    fi
-
-    echo "       Prerequisites OK"
-}
-
-identify_key_purpose() {
-    # Identify key purpose based on handle and attributes
-    local handle="$1"
-    local attrs="$2"
-
-    # Check by well-known handles first
-    case "$handle" in
-        0x81000001)
-            echo "SRK"      # Storage Root Key
-            return
-            ;;
-        0x81000002)
-            # Could be AK or another system key
-            if [[ "$attrs" == *"restricted"* && "$attrs" == *"sign"* ]]; then
-                echo "AK"   # Attestation Key
-            else
-                echo "sys"
-            fi
-            return
-            ;;
-        0x81010001)
-            if [[ "$attrs" == *"restricted"* && "$attrs" == *"decrypt"* ]]; then
-                echo "EK"   # Endorsement Key (persisted)
-            else
-                echo "?"
-            fi
-            return
-            ;;
-    esac
-
-    # Check if it's our KeyVault key
-    if [ "$handle" = "$TPM_HANDLE" ]; then
-        if is_keyvault_key "$handle"; then
-            echo "KV"       # KeyVault
-            return
-        fi
-    fi
-
-    # Check by attributes for unknown handles
-    if [[ "$attrs" == *"restricted"* && "$attrs" == *"decrypt"* && "$attrs" != *"sign"* ]]; then
-        echo "EK?"          # Looks like EK
-    elif [[ "$attrs" == *"restricted"* && "$attrs" == *"sign"* && "$attrs" != *"decrypt"* ]]; then
-        echo "AK?"          # Looks like AK
-    elif [[ "$attrs" == *"restricted"* && "$attrs" == *"decrypt"* ]]; then
-        echo "SRK?"         # Looks like storage key
-    elif [[ "$attrs" == *"decrypt"* && "$attrs" == *"sign"* ]]; then
-        echo "app"          # Application key
-    else
-        echo "?"
-    fi
-}
-
-list_persistent_handles() {
-    echo ""
-    echo "Persistent handles currently in use:"
-    echo "───────────────────────────────────────────────────────────────────────"
-
-    local handles=$(tpm2_getcap handles-persistent 2>/dev/null | grep "0x" | tr -d ' -')
-
-    if [ -z "$handles" ]; then
-        echo "  (none)"
-    else
-        printf "  %-14s  %-6s  %-8s  %-6s  %s\n" "Handle" "Key" "Type" "Bits" "Attributes"
-        echo "  ───────────────────────────────────────────────────────────────────"
-
-        for handle in $handles; do
-            local info=$(tpm2_readpublic -c "$handle" 2>/dev/null)
-            local type=$(echo "$info" | grep -A1 "^type:" | tail -1 | sed 's/.*value: //')
-            local bits=$(echo "$info" | grep "^bits:" | awk '{print $2}')
-            local attrs=$(echo "$info" | grep -A1 "^attributes:" | tail -1 | sed 's/.*value: //')
-            local attrs_short=$(echo "$attrs" | cut -c1-26)
-            local purpose=$(identify_key_purpose "$handle" "$attrs")
-
-            # Check if this is our target handle
-            if [ "$handle" = "$TPM_HANDLE" ]; then
-                printf "  %-14s  %-6s  %-8s  %-6s  %s  ← target\n" "$handle" "$purpose" "$type" "$bits" "$attrs_short"
-            else
-                printf "  %-14s  %-6s  %-8s  %-6s  %s\n" "$handle" "$purpose" "$type" "$bits" "$attrs_short"
-            fi
-        done
-    fi
-    echo ""
-    echo "Key types: SRK=Storage Root, EK=Endorsement, AK=Attestation, KV=KeyVault, app=application"
-    echo ""
-}
-
-is_keyvault_key() {
-    # Check if the key at the given handle looks like a KeyVault key
-    # We identify by: RSA-2048, has decrypt+sign attributes
-    local handle="$1"
-    local info=$(tpm2_readpublic -c "$handle" 2>/dev/null)
-
-    if [ -z "$info" ]; then
-        return 1  # No key at handle
-    fi
-
-    local type=$(echo "$info" | grep -A1 "^type:" | tail -1 | sed 's/.*value: //')
-    local bits=$(echo "$info" | grep "^bits:" | awk '{print $2}')
-    local attrs=$(echo "$info" | grep -A1 "^attributes:" | tail -1 | sed 's/.*value: //')
-
-    # Check if it matches our KeyVault key profile
-    if [[ "$type" == "rsa" && "$bits" == "2048" && "$attrs" == *"decrypt"* && "$attrs" == *"sign"* ]]; then
-        return 0  # Looks like ours
-    fi
-
-    return 1  # Doesn't match our profile
-}
-
-check_existing_key() {
-    echo "[3/8] Checking for existing key at $TPM_HANDLE..."
-
-    if tpm2_readpublic -c "$TPM_HANDLE" &> /dev/null; then
-        if is_keyvault_key "$TPM_HANDLE"; then
-            echo "       KeyVault key exists at $TPM_HANDLE"
-            return 0  # Our key exists
-        else
-            echo ""
-            echo "  ┌─────────────────────────────────────────────────────────────┐"
-            echo "  │  WARNING: Handle $TPM_HANDLE is OCCUPIED by unknown key!    │"
-            echo "  │                                                             │"
-            echo "  │  This may belong to another application. Overwriting it     │"
-            echo "  │  could break other software on this system.                 │"
-            echo "  │                                                             │"
-            echo "  │  Options:                                                   │"
-            echo "  │    1. Use --handle 0x810100XX to pick a different handle    │"
-            echo "  │    2. Use --list to see all handles in use                  │"
-            echo "  │    3. Use --force if you're SURE you want to overwrite      │"
-            echo "  └─────────────────────────────────────────────────────────────┘"
-            echo ""
-            return 2  # Occupied by unknown key
-        fi
-    else
-        echo "       Handle $TPM_HANDLE is available"
-        return 1  # Handle is free
-    fi
-}
-
-remove_existing_key() {
-    echo "       Removing existing key..."
-    tpm2_evictcontrol -C o -c "$TPM_HANDLE" 2>/dev/null || true
-    echo "       Key removed"
-}
-
-clear_keyvault_key() {
-    echo ""
-    echo "Clearing KeyVault key at $TPM_HANDLE..."
-    echo ""
-
-    # Check if key exists
-    if ! tpm2_readpublic -c "$TPM_HANDLE" &> /dev/null; then
-        echo "No key found at $TPM_HANDLE - nothing to clear"
-        return 1
-    fi
-
-    # Check if it's our key (unless --force)
-    if [ "$FORCE" != true ]; then
-        if ! is_keyvault_key "$TPM_HANDLE"; then
-            echo "  ┌─────────────────────────────────────────────────────────────┐"
-            echo "  │  WARNING: Key at $TPM_HANDLE doesn't look like KeyVault!    │"
-            echo "  │                                                             │"
-            echo "  │  This may belong to another application.                    │"
-            echo "  │  Use --force --clear if you're SURE you want to remove it.  │"
-            echo "  └─────────────────────────────────────────────────────────────┘"
-            return 2
-        fi
-    fi
-
-    # Remove the key
-    if tpm2_evictcontrol -C o -c "$TPM_HANDLE" 2>/dev/null; then
-        echo "Key removed from TPM at $TPM_HANDLE"
-
-        # Also clean up local files if they exist
-        if [ -f "$PUBLIC_KEY_PEM" ]; then
-            rm -f "$PUBLIC_KEY_PEM"
-            echo "Removed: $PUBLIC_KEY_PEM"
-        fi
-        if [ -f "$EK_CTX" ]; then
-            rm -f "$EK_CTX"
-            echo "Removed: $EK_CTX"
-        fi
-        if [ -f "$EK_PUB" ]; then
-            rm -f "$EK_PUB"
-            echo "Removed: $EK_PUB"
-        fi
-
-        echo ""
-        echo "KeyVault cleared. Run ./init.sh to re-provision."
-        return 0
-    else
-        echo "ERROR: Failed to remove key"
-        return 1
-    fi
-}
-
-create_ek() {
-    echo "[4/8] Creating Endorsement Key (EK) context..."
-
-    # Create/load EK - used for encrypted session key agreement
-    # The EK is derived from TPM's burned-in seed (same every time)
-    # This doesn't "create" a new key, it loads the existing factory EK
-    tpm2_createek \
-        -c "$EK_CTX" \
-        -G rsa \
-        -u "$EK_PUB" \
-        > /dev/null
-
-    echo "       EK context created (for encrypted sessions)"
-}
-
-create_primary_key() {
-    echo "[5/8] Creating primary storage key..."
-
-    # Create primary key under owner hierarchy
-    # This key is derived from TPM's internal seed (deterministic)
-    tpm2_createprimary \
-        -C o \
-        -g sha256 \
-        -G rsa \
-        -c "$PRIMARY_CTX" \
-        > /dev/null
-
-    echo "       Primary key created"
-}
-
-create_rsa_key() {
-    echo "[6/8] Creating RSA-2048 key with sign+decrypt attributes..."
-
-    # Create RSA key with the following attributes:
-    #   fixedtpm           - Key can only be used on this TPM
-    #   fixedparent        - Key cannot be moved to different parent
-    #   sensitivedataorigin - Private key generated inside TPM
-    #   userwithauth       - Can use with authorization
-    #   decrypt            - Key can decrypt data
-    #   sign               - Key can sign data
-    tpm2_create \
-        -C "$PRIMARY_CTX" \
-        -G rsa2048 \
-        -u "$KEY_PUB" \
-        -r "$KEY_PRIV" \
-        -a "fixedtpm|fixedparent|sensitivedataorigin|userwithauth|decrypt|sign" \
-        > /dev/null
-
-    echo "       RSA key created (private key is inside TPM)"
-}
-
-load_and_persist_key() {
-    echo "[7/8] Loading and persisting key at $TPM_HANDLE..."
-
-    # Load key into TPM
-    tpm2_load \
-        -C "$PRIMARY_CTX" \
-        -u "$KEY_PUB" \
-        -r "$KEY_PRIV" \
-        -c "$KEY_CTX" \
-        > /dev/null
-
-    # Persist at specified handle (survives reboot)
-    tpm2_evictcontrol \
-        -C o \
-        -c "$KEY_CTX" \
-        "$TPM_HANDLE" \
-        > /dev/null
-
-    echo "       Key persisted at $TPM_HANDLE"
-}
-
-export_public_key() {
-    echo "[8/8] Exporting public key to $PUBLIC_KEY_PEM..."
-
-    # Create output directory if needed
-    mkdir -p "$KEY_DIR"
-
-    # Export public key as PEM
-    tpm2_readpublic \
-        -c "$TPM_HANDLE" \
-        -f pem \
-        -o "$PUBLIC_KEY_PEM" \
-        > /dev/null
-
-    echo "       Public key exported"
-}
-
-verify_key() {
-    echo ""
-    echo "========================================"
-    echo "  Verification"
-    echo "========================================"
-    echo ""
-
-    echo "Testing TPM key operations..."
-    echo ""
-
-    # Test sign operation
-    echo "Sign test:"
-    echo "Hello TPM" > /tmp/test_msg_$$.txt
-    tpm2_sign \
-        -c "$TPM_HANDLE" \
-        -g sha256 \
-        -o /tmp/test_sig_$$.bin \
-        /tmp/test_msg_$$.txt 2>/dev/null && echo "  Sign: OK" || echo "  Sign: FAILED"
-    rm -f /tmp/test_sig_$$.bin /tmp/test_msg_$$.txt
-
-    # Test encrypt/decrypt
-    echo ""
-    echo "Encrypt/Decrypt test:"
-    echo -n "TestSecret" > /tmp/test_plain_$$.txt
-
-    openssl pkeyutl -encrypt \
-        -pubin -inkey "$PUBLIC_KEY_PEM" \
-        -in /tmp/test_plain_$$.txt \
-        -out /tmp/test_enc_$$.bin 2>/dev/null
-
-    openssl pkeyutl -provider tpm2 -provider default \
-        -decrypt \
-        -inkey "handle:$TPM_HANDLE" \
-        -in /tmp/test_enc_$$.bin \
-        -out /tmp/test_dec_$$.txt 2>/dev/null
-
-    if diff -q /tmp/test_plain_$$.txt /tmp/test_dec_$$.txt > /dev/null 2>&1; then
-        echo "  Encrypt/Decrypt: OK"
-    else
-        echo "  Encrypt/Decrypt: FAILED"
-    fi
-
-    rm -f /tmp/test_plain_$$.txt /tmp/test_enc_$$.bin /tmp/test_dec_$$.txt
-}
-
-print_summary() {
-    echo ""
-    echo "========================================"
-    echo "  Summary"
-    echo "========================================"
-    echo ""
-    echo "TPM Key Handle:  $TPM_HANDLE"
-    echo "Public Key:      $PUBLIC_KEY_PEM"
-    echo "EK Context:      $EK_CTX (for encrypted sessions)"
-    echo ""
-    echo "Key Attributes:"
-    echo "  - fixedtpm: Key bound to THIS TPM only"
-    echo "  - sensitivedataorigin: Private key generated inside TPM"
-    echo "  - decrypt: Can decrypt data (for passphrase unwrapping)"
-    echo "  - sign: Can sign data (for authentication)"
-    echo ""
-    echo "Endorsement Key (EK):"
-    echo "  - Factory-burned key for TPM identity"
-    echo "  - Used for encrypted session key agreement"
-    echo "  - Protects bus communication against sniffing"
-    echo ""
-    echo "Next Steps:"
-    echo "  1. Build: mkdir -p source/build && cd source/build && cmake .. && make"
-    echo "  2. From project root, run: ./source/build/tpm_example"
-    echo "  3. Full demo: ./source/build/key_vault_example"
-    echo ""
-    echo "Security Note:"
-    echo "  The private key exists ONLY inside the TPM chip."
-    echo "  It cannot be extracted or cloned to another device."
-    echo "  Bus traffic is encrypted using EK-derived session keys."
-    echo ""
-}
+FORCE=false
+CHECK_ONLY=false
+PCR_NUM=""
+PCR_VALUE=""
 
 show_usage() {
+    echo "TPM2 Key Provisioning Script"
+    echo ""
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
     echo "  --check              Check if key exists (exit 0 if yes, 1 if no)"
-    echo "  --clear              Remove KeyVault key from TPM and clean up files"
-    echo "  --force              Force operation (overwrite/remove without safety checks)"
-    echo "  --list               List all persistent handles currently in use"
+    echo "  --force              Force operation (overwrite existing key)"
     echo "  --handle 0x810100XX  Use a specific handle (default: $DEFAULT_HANDLE)"
+    echo "  --pcr <14|15|16>     Bind key to PCR policy"
+    echo "  --pcr-value <value>  Identity value for PCR (required with --pcr)"
     echo "  --help               Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0                   # Provision new key at default handle"
-    echo "  $0 --list            # See what's in the TPM"
-    echo "  $0 --clear           # Remove KeyVault key and files"
-    echo "  $0 --handle 0x81010003 --clear  # Remove key at specific handle"
+    echo "  $0                                    # Basic provisioning"
+    echo "  $0 --pcr 16 --pcr-value \"SERIAL-001\" # With PCR binding (demo)"
+    echo "  $0 --pcr 14 --pcr-value \"SERIAL-001\" # With PCR binding (production)"
+    echo "  $0 --force                            # Re-provision existing key"
     echo ""
-    echo "Handle ranges (by convention):"
-    echo "  0x81000000-0x810000FF  Owner hierarchy (SRK, system keys)"
-    echo "  0x81010000-0x810100FF  Endorsement hierarchy (EK, app keys)"
-    echo "  0x81800000-0x818000FF  Platform hierarchy (firmware)"
+    echo "Related tools:"
+    echo "  ./list.sh      List TPM persistent handles"
+    echo "  ./clear.sh     Remove KeyVault key"
+    echo "  ./pcr.sh       PCR management (extend/reset/read)"
+    echo ""
+    echo "PCR Notes:"
+    echo "  PCR 16: Debug PCR, software resettable (for testing)"
+    echo "  PCR 14-15: Production PCRs, reset on reboot only"
     echo ""
 }
-
-# =============================================================================
-# Main
-# =============================================================================
-
-print_banner
-
-# Parse arguments
-FORCE=false
-CHECK_ONLY=false
-LIST_ONLY=false
-CLEAR_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -505,20 +98,11 @@ while [[ $# -gt 0 ]]; do
             CHECK_ONLY=true
             shift
             ;;
-        --clear)
-            CLEAR_MODE=true
-            shift
-            ;;
-        --list)
-            LIST_ONLY=true
-            shift
-            ;;
         --handle)
             if [[ -z "$2" || "$2" == --* ]]; then
                 echo "ERROR: --handle requires a value (e.g., --handle 0x81010003)"
                 exit 1
             fi
-            # Validate handle format
             if [[ ! "$2" =~ ^0x81[0-9a-fA-F]{6}$ ]]; then
                 echo "ERROR: Invalid handle format: $2"
                 echo "       Expected format: 0x81XXXXXX (e.g., 0x81010002)"
@@ -527,7 +111,27 @@ while [[ $# -gt 0 ]]; do
             TPM_HANDLE="$2"
             shift 2
             ;;
-        --help)
+        --pcr)
+            if [[ -z "$2" || "$2" == --* ]]; then
+                echo "ERROR: --pcr requires a value (14, 15, or 16)"
+                exit 1
+            fi
+            if [[ ! "$2" =~ ^(14|15|16)$ ]]; then
+                echo "ERROR: --pcr must be 14, 15, or 16"
+                exit 1
+            fi
+            PCR_NUM="$2"
+            shift 2
+            ;;
+        --pcr-value)
+            if [[ -z "$2" || "$2" == --* ]]; then
+                echo "ERROR: --pcr-value requires a value"
+                exit 1
+            fi
+            PCR_VALUE="$2"
+            shift 2
+            ;;
+        --help|-h)
             show_usage
             exit 0
             ;;
@@ -539,90 +143,206 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# List only mode
-if [ "$LIST_ONLY" = true ]; then
-    list_persistent_handles
-    echo "Target handle: $TPM_HANDLE"
-    echo ""
-    exit 0
+# Validate PCR arguments
+if [ -n "$PCR_NUM" ] && [ -z "$PCR_VALUE" ]; then
+    echo "ERROR: --pcr-value is required when using --pcr"
+    exit 1
 fi
 
-# Clear mode
-if [ "$CLEAR_MODE" = true ]; then
-    clear_keyvault_key && exit 0 || exit $?
+if [ -z "$PCR_NUM" ] && [ -n "$PCR_VALUE" ]; then
+    echo "ERROR: --pcr is required when using --pcr-value"
+    exit 1
 fi
+
+# =============================================================================
+# Main
+# =============================================================================
+
+print_banner() {
+    echo "════════════════════════════════════════════════════════════════════"
+    echo "  TPM2 Key Provisioning"
+    echo "════════════════════════════════════════════════════════════════════"
+    echo ""
+}
+
+check_existing_key() {
+    if tpm2_readpublic -c "$TPM_HANDLE" &> /dev/null; then
+        if is_keyvault_key "$TPM_HANDLE"; then
+            return 0  # Our key exists
+        else
+            return 2  # Handle occupied by unknown key
+        fi
+    else
+        return 1  # Handle is free
+    fi
+}
+
+print_banner
 
 # Check only mode
 if [ "$CHECK_ONLY" = true ]; then
+    echo "Checking for existing key at $TPM_HANDLE..."
     check_existing_key && result=0 || result=$?
     if [ $result -eq 0 ]; then
         echo ""
         echo "KeyVault key exists at $TPM_HANDLE"
         echo "Public key: $PUBLIC_KEY_PEM"
+        if [ -f "$PCR_POLICY_FILE" ]; then
+            echo "PCR policy: $(cat $PCR_POLICY_FILE)"
+        fi
         exit 0
     elif [ $result -eq 2 ]; then
         echo "Handle occupied by unknown key"
         exit 2
     else
-        echo ""
         echo "No key at $TPM_HANDLE"
         exit 1
     fi
 fi
 
-# Normal provisioning
-check_prerequisites
+# Step counting (varies based on PCR policy)
+if [ -n "$PCR_NUM" ]; then
+    TOTAL_STEPS=8
+else
+    TOTAL_STEPS=7
+fi
+STEP=1
 
-# Show what's currently in use
+# Prerequisites
+echo "[$STEP/$TOTAL_STEPS] Checking prerequisites..."
+if ! check_tpm_prerequisites; then
+    exit 1
+fi
+echo "       OK"
+((STEP++))
+
+# Show current state
 echo ""
-echo "[2/8] Scanning TPM persistent storage..."
+echo "[$STEP/$TOTAL_STEPS] Scanning TPM persistent storage..."
+echo ""
 list_persistent_handles
+((STEP++))
 
+# Check for existing key
+echo "[$STEP/$TOTAL_STEPS] Checking for existing key at $TPM_HANDLE..."
 check_existing_key && key_status=0 || key_status=$?
 
 if [ $key_status -eq 0 ]; then
     # Our key exists
     if [ "$FORCE" = true ]; then
-        echo "WARNING: --force specified, removing existing KeyVault key"
-        remove_existing_key
+        echo "       --force specified, removing existing KeyVault key"
+        remove_key "$TPM_HANDLE"
     else
         echo ""
         echo "KeyVault key already provisioned!"
-        echo "Use --force to remove and recreate, or --check to verify"
-        print_summary
+        echo "Use --force to remove and recreate"
         exit 0
     fi
 elif [ $key_status -eq 2 ]; then
     # Handle occupied by unknown key
     if [ "$FORCE" = true ]; then
-        echo "WARNING: --force specified, OVERWRITING unknown key!"
-        echo "         (Hope you know what you're doing...)"
-        remove_existing_key
+        echo "       WARNING: --force specified, OVERWRITING unknown key!"
+        remove_key "$TPM_HANDLE"
     else
-        echo "Aborting to avoid overwriting unknown key."
         echo ""
-        echo "Suggested free handles:"
-        # Find a few free handles to suggest
-        for try_handle in 0x81010002 0x81010003 0x81010004 0x81010005; do
-            if ! tpm2_readpublic -c "$try_handle" &> /dev/null; then
-                echo "  $try_handle  (available)"
-            fi
-        done
-        echo ""
-        echo "Use: $0 --handle 0x810100XX"
+        echo "  ┌─────────────────────────────────────────────────────────────┐"
+        echo "  │  WARNING: Handle $TPM_HANDLE is OCCUPIED by unknown key!    │"
+        echo "  │                                                             │"
+        echo "  │  This may belong to another application.                    │"
+        echo "  │  Use --force to overwrite, or --handle to use different one │"
+        echo "  └─────────────────────────────────────────────────────────────┘"
         exit 1
     fi
+else
+    echo "       Handle $TPM_HANDLE is available"
 fi
-# else: key_status -eq 1 means handle is free, proceed
+((STEP++))
+
+# PCR Policy setup (if requested)
+if [ -n "$PCR_NUM" ]; then
+    echo ""
+    echo "[$STEP/$TOTAL_STEPS] Setting up PCR policy..."
+    setup_pcr_policy "$PCR_NUM" "$PCR_VALUE" "$FORCE"
+    ((STEP++))
+fi
+
+# Create EK
+echo ""
+echo "[$STEP/$TOTAL_STEPS] Creating Endorsement Key (EK) context..."
+create_ek
+((STEP++))
+
+# Create primary key
+echo ""
+echo "[$STEP/$TOTAL_STEPS] Creating primary storage key..."
+create_primary_key
+((STEP++))
+
+# Create RSA key (with or without policy)
+echo ""
+echo "[$STEP/$TOTAL_STEPS] Creating RSA-2048 key..."
+if [ -n "$PCR_NUM" ]; then
+    create_rsa_key true  # With PCR policy
+else
+    create_rsa_key false # Without policy
+fi
+((STEP++))
+
+# Load and persist
+echo ""
+echo "[$STEP/$TOTAL_STEPS] Loading and persisting key..."
+load_and_persist_key "$TPM_HANDLE"
+export_public_key "$TPM_HANDLE"
+
+# Verification
+echo ""
+echo "════════════════════════════════════════════════════════════════════"
+echo "  Verification"
+echo "════════════════════════════════════════════════════════════════════"
+verify_key_operations "$TPM_HANDLE"
+
+# Summary
+echo ""
+echo "════════════════════════════════════════════════════════════════════"
+echo "  Summary"
+echo "════════════════════════════════════════════════════════════════════"
+echo ""
+echo "TPM Key Handle:  $TPM_HANDLE"
+echo "Public Key:      $PUBLIC_KEY_PEM"
+echo "EK Context:      $EK_CTX (for encrypted sessions)"
+
+if [ -n "$PCR_NUM" ]; then
+    echo ""
+    echo "PCR Policy:"
+    echo "  PCR Number:    $PCR_NUM"
+    echo "  Identity:      $PCR_VALUE"
+    echo "  Config:        $PCR_POLICY_FILE"
+    echo ""
+    echo "IMPORTANT: Before using KeyVault, PCR $PCR_NUM must be extended with"
+    echo "           the same value. Use: ./pcr.sh boot"
+fi
 
 echo ""
-create_ek
-create_primary_key
-create_rsa_key
-load_and_persist_key
-export_public_key
+echo "Key Attributes:"
+echo "  - fixedtpm: Key bound to THIS TPM only"
+echo "  - sensitivedataorigin: Private key generated inside TPM"
+echo "  - decrypt: Can decrypt data (for passphrase unwrapping)"
+echo "  - sign: Can sign data (for authentication)"
+if [ -n "$PCR_NUM" ]; then
+    echo "  - PCR policy: Requires PCR $PCR_NUM to match provisioned value"
+fi
 
-verify_key
-print_summary
+echo ""
+echo "Next Steps:"
+if [ -n "$PCR_NUM" ]; then
+    echo "  1. On each boot, run: ./pcr.sh boot"
+    echo "  2. Then run KeyVault: ./source/build/key_vault_example"
+else
+    echo "  1. Build: mkdir -p source/build && cd source/build && cmake .. && make"
+    echo "  2. Run: ./source/build/key_vault_example"
+fi
 
-echo "Provisioning complete!"
+echo ""
+echo "════════════════════════════════════════════════════════════════════"
+echo "  Provisioning complete!"
+echo "════════════════════════════════════════════════════════════════════"

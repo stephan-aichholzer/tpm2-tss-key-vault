@@ -96,12 +96,18 @@ public:
     ESYS_TR key_handle = ESYS_TR_NONE;  ///< Loaded key reference
     ESYS_TR ek_handle = ESYS_TR_NONE;   ///< Endorsement Key reference
     ESYS_TR session = ESYS_TR_NONE;     ///< Encrypted session
+    int pcr_index = -1;                 ///< PCR index for policy (-1 = no policy)
     bool valid = false;
 
     /**
      * @brief Initialize TPM connection with EK-salted encrypted session
+     * @param persistent_handle TPM handle for the key
+     * @param ek_ctx_path (unused - EK created directly)
+     * @param pcr_idx PCR index for policy, or -1 for no policy
      */
-    void init(uint32_t persistent_handle, const std::string& /* ek_ctx_path - unused */) {
+    void init(uint32_t persistent_handle, const std::string& /* ek_ctx_path - unused */,
+              int pcr_idx) {
+        pcr_index = pcr_idx;
         TSS2_RC rc;
 
         // -----------------------------------------------------------------
@@ -168,7 +174,12 @@ public:
             .mode = { .aes = TPM2_ALG_CFB }
         };
 
-        // Start HMAC session with encryption, SALTED with EK
+        // Session type depends on whether PCR policy is required
+        // TPM2_SE_POLICY: Required for keys created with policy
+        // TPM2_SE_HMAC: Standard session for keys without policy
+        TPM2_SE session_type = (pcr_index >= 0) ? TPM2_SE_POLICY : TPM2_SE_HMAC;
+
+        // Start session with encryption, SALTED with EK
         // The salt is encrypted with EK public key - only TPM can decrypt
         // This prevents bus sniffers from deriving the session key
         rc = Esys_StartAuthSession(
@@ -179,7 +190,7 @@ public:
             ESYS_TR_NONE,           // shandle2
             ESYS_TR_NONE,           // shandle3
             nullptr,                // nonceCaller (auto-generated)
-            TPM2_SE_HMAC,           // session type
+            session_type,           // POLICY if PCR required, else HMAC
             &symmetric,             // AES-128-CFB for encryption
             TPM2_ALG_SHA256,        // hash algorithm
             &session
@@ -229,6 +240,37 @@ public:
         }
 
         TSS2_RC rc;
+
+        // -----------------------------------------------------------------
+        // If PCR policy is required, satisfy it before decrypt
+        // -----------------------------------------------------------------
+        if (pcr_index >= 0) {
+            // Build PCR selection for the specified PCR
+            TPML_PCR_SELECTION pcr_selection = {
+                .count = 1,
+                .pcrSelections = {{
+                    .hash = TPM2_ALG_SHA256,
+                    .sizeofSelect = 3,
+                    .pcrSelect = {0, 0, 0}
+                }}
+            };
+            // Set the bit for our PCR (PCR 0-7 in byte 0, 8-15 in byte 1, 16-23 in byte 2)
+            pcr_selection.pcrSelections[0].pcrSelect[pcr_index / 8] |= (1 << (pcr_index % 8));
+
+            // Satisfy PCR policy - TPM will check current PCR matches policy
+            rc = Esys_PolicyPCR(
+                ctx,
+                session,            // Policy session
+                ESYS_TR_NONE,
+                ESYS_TR_NONE,
+                ESYS_TR_NONE,
+                nullptr,            // pcrDigest (NULL = use current PCR values)
+                &pcr_selection
+            );
+            if (rc != TSS2_RC_SUCCESS) {
+                throw std::runtime_error("Esys_PolicyPCR failed (PCR mismatch?): " + tss_error(rc));
+            }
+        }
 
         // Prepare ciphertext as TPM2B structure
         TPM2B_PUBLIC_KEY_RSA cipher_in = { 0 };
@@ -288,9 +330,10 @@ public:
 // Public API
 // =============================================================================
 
-TssSession::TssSession(uint32_t key_handle, const std::string& ek_ctx_path)
+TssSession::TssSession(uint32_t key_handle, const std::string& ek_ctx_path,
+                       int pcr_index)
     : impl_(std::make_unique<Impl>()) {
-    impl_->init(key_handle, ek_ctx_path);
+    impl_->init(key_handle, ek_ctx_path, pcr_index);
 }
 
 TssSession::~TssSession() = default;

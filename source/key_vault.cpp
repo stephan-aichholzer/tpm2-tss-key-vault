@@ -29,6 +29,7 @@
 #include "tss_session.h"
 
 #include <cstring>
+#include <fstream>
 #include <stdexcept>
 #include <sys/mman.h>  // mlock, munlock
 
@@ -36,6 +37,29 @@
 #include <openssl/store.h>
 #include <openssl/pem.h>
 #include <openssl/err.h>
+
+/**
+ * @brief Read PCR policy index from config file
+ * @param key_dir Directory containing key files
+ * @return PCR index (14, 15, or 16), or -1 if no policy configured
+ */
+static int read_pcr_policy(const std::string& key_dir) {
+    std::string policy_file = key_dir + "/pcr_policy";
+    std::ifstream f(policy_file);
+    if (!f.is_open()) {
+        return -1;  // No PCR policy configured
+    }
+
+    int pcr_index = -1;
+    f >> pcr_index;
+
+    // Validate PCR index
+    if (pcr_index < 0 || pcr_index > 23) {
+        return -1;
+    }
+
+    return pcr_index;
+}
 
 // =============================================================================
 // SecureBuffer Implementation
@@ -214,6 +238,8 @@ public:
     uint32_t tpm_handle;                    ///< TPM persistent handle (e.g., 0x81010002)
     std::string pubkey_path;                ///< Path to TPM public key PEM
     std::string ek_ctx_path;                ///< Path to EK context file
+    std::string key_dir;                    ///< Directory containing key files
+    int pcr_index = -1;                     ///< PCR index for policy (-1 = no policy)
     std::unique_ptr<TssSession> tss_session; ///< Encrypted TPM session (EK-salted)
     OSSL_PROVIDER* default_provider = nullptr; ///< Default OpenSSL provider (for PEM ops)
 
@@ -232,11 +258,19 @@ public:
      * Endorsement Key for session key agreement. All bus traffic
      * is AES encrypted and the session key cannot be derived by
      * an attacker sniffing the bus.
+     *
+     * If a PCR policy file exists (keys/pcr_policy), the session
+     * will use policy-based authorization requiring the specified
+     * PCR to match its provisioned value.
      */
     void init() {
+        // Check for PCR policy configuration
+        pcr_index = read_pcr_policy(key_dir);
+
         // Create EK-salted encrypted TPM session
         // Session key is derived using salt encrypted with EK
-        tss_session = std::make_unique<TssSession>(tpm_handle, ek_ctx_path);
+        // If pcr_index >= 0, session will require PCR policy satisfaction
+        tss_session = std::make_unique<TssSession>(tpm_handle, ek_ctx_path, pcr_index);
 
         // Load default provider for standard crypto (PEM loading, etc.)
         default_provider = OSSL_PROVIDER_load(NULL, "default");
@@ -399,6 +433,15 @@ KeyVault::KeyVault(uint32_t tpm_handle, const std::string& pubkey_pem_path,
     impl_->tpm_handle = tpm_handle;
     impl_->pubkey_path = pubkey_pem_path;
     impl_->ek_ctx_path = ek_ctx_path;
+
+    // Extract key directory from ek_ctx_path (e.g., "keys/ek.ctx" -> "keys")
+    size_t pos = ek_ctx_path.rfind('/');
+    if (pos != std::string::npos) {
+        impl_->key_dir = ek_ctx_path.substr(0, pos);
+    } else {
+        impl_->key_dir = ".";
+    }
+
     impl_->init();
 }
 

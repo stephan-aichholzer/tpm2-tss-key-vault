@@ -47,9 +47,20 @@ class SecureBuffer;
  * the session key derivation is protected - an attacker sniffing the
  * bus cannot derive the session key even if they see all traffic.
  *
+ * ## PCR Policy Support
+ *
+ * When a PCR number is specified, operations require the PCR to match
+ * the value recorded during key creation. This binds the key to the
+ * platform identity (e.g., device serial number).
+ *
  * Usage:
  * @code
+ *   // Without PCR policy
  *   TssSession session(0x81010002, "keys/ek.ctx");
+ *
+ *   // With PCR policy (key bound to PCR 16)
+ *   TssSession session(0x81010002, "keys/ek.ctx", 16);
+ *
  *   SecureBuffer plaintext = session.decrypt(ciphertext);
  * @endcode
  *
@@ -66,9 +77,11 @@ public:
      *
      * @param key_handle Persistent TPM handle (e.g., 0x81010002)
      * @param ek_ctx_path Path to EK context file from init.sh (e.g., "keys/ek.ctx")
+     * @param pcr_index Optional PCR index for policy (-1 = no policy, default)
      * @throws std::runtime_error if TPM connection or session setup fails
      */
-    TssSession(uint32_t key_handle, const std::string& ek_ctx_path);
+    TssSession(uint32_t key_handle, const std::string& ek_ctx_path,
+               int pcr_index = -1);
 
     /**
      * @brief Cleanup TPM resources
