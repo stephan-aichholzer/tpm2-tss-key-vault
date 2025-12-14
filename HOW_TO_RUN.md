@@ -53,6 +53,24 @@
 ./source/build/key_vault_example
 ```
 
+## TPM Status (JSON)
+
+```bash
+# Full status as JSON
+./scripts/tpm2_status.sh
+
+# Pretty-printed
+./scripts/tpm2_status.sh --pretty
+
+# Quick accessibility check (exit code only)
+./scripts/tpm2_status.sh --check && echo "TPM OK"
+
+# Query with jq
+./scripts/tpm2_status.sh | jq '.keyvault'
+./scripts/tpm2_status.sh | jq '.health'
+./scripts/tpm2_status.sh | jq '.persistent_keys[] | select(.is_keyvault)'
+```
+
 ## Utility Commands
 
 ```bash
