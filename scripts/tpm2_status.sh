@@ -259,10 +259,11 @@ if [ -n "$PCR_RAW" ]; then
     while IFS= read -r line; do
         if echo "$line" | grep -qE "^\s+[0-9]+\s*:"; then
             PCR_NUM=$(echo "$line" | sed 's/^\s*//' | cut -d: -f1 | tr -d ' ')
-            PCR_VAL=$(echo "$line" | cut -d: -f2 | tr -d ' ')
+            # Get value, remove 0x prefix, convert to lowercase
+            PCR_VAL=$(echo "$line" | cut -d: -f2 | tr -d ' ' | sed 's/^0x//' | tr '[:upper:]' '[:lower:]')
             # Check if PCR is zero (all zeros)
             IS_ZERO="false"
-            if echo "$PCR_VAL" | grep -qE "^0x0+$"; then
+            if echo "$PCR_VAL" | grep -qE "^0+$"; then
                 IS_ZERO="true"
             fi
             PCR_VALUES_JSON="${PCR_VALUES_JSON}{\"index\":$PCR_NUM,\"value\":\"$PCR_VAL\",\"is_zero\":$IS_ZERO},"
