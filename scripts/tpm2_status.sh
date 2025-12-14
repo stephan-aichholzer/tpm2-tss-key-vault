@@ -215,10 +215,11 @@ KEYS_JSON=""
 for handle in $HANDLES_RAW; do
     INFO=$(tpm2_readpublic -c $handle 2>/dev/null || echo "")
     if [ -n "$INFO" ]; then
-        TYPE=$(echo "$INFO" | grep "^type:" | awk '{print $2}')
+        # Type and name-alg have "value:" on the next line
+        TYPE=$(echo "$INFO" | grep -A1 "^type:" | grep "value:" | sed 's/.*value: //')
         BITS=$(echo "$INFO" | grep "^bits:" | awk '{print $2}')
-        NAME_ALG=$(echo "$INFO" | grep "^name-alg:" | awk '{print $2}')
-        ATTRS=$(echo "$INFO" | grep -A1 "^attributes:" | tail -1 | sed 's/.*value: //')
+        NAME_ALG=$(echo "$INFO" | grep -A1 "^name-alg:" | grep "value:" | sed 's/.*value: //')
+        ATTRS=$(echo "$INFO" | grep -A1 "^attributes:" | grep "value:" | sed 's/.*value: //')
 
         # Parse attributes into array
         ATTRS_JSON=$(echo "$ATTRS" | tr '|' '\n' | while read attr; do
