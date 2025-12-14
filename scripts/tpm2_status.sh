@@ -221,6 +221,20 @@ for handle in $HANDLES_RAW; do
         NAME_ALG=$(echo "$INFO" | grep -A1 "^name-alg:" | grep "value:" | sed 's/.*value: //')
         ATTRS=$(echo "$INFO" | grep -A1 "^attributes:" | grep "value:" | sed 's/.*value: //')
 
+        # RSA-specific: exponent
+        EXPONENT=$(echo "$INFO" | grep "^exponent:" | awk '{print $2}')
+
+        # Scheme info
+        SCHEME=$(echo "$INFO" | grep -A1 "^scheme:" | grep "value:" | sed 's/.*value: //')
+
+        # Policy digest (indicates if key has authorization policy, e.g., PCR binding)
+        POLICY_DIGEST=$(echo "$INFO" | grep "^authorization policy:" | awk '{print $3}')
+        HAS_POLICY="false"
+        # Non-zero policy digest means key has a policy
+        if [ -n "$POLICY_DIGEST" ] && [ "$POLICY_DIGEST" != "0000000000000000000000000000000000000000000000000000000000000000" ]; then
+            HAS_POLICY="true"
+        fi
+
         # Parse attributes into array
         ATTRS_JSON=$(echo "$ATTRS" | tr '|' '\n' | while read attr; do
             [ -n "$attr" ] && printf '"%s",' "$attr"
@@ -229,10 +243,33 @@ for handle in $HANDLES_RAW; do
         IS_KEYVAULT="false"
         [ "$handle" = "0x81010002" ] && IS_KEYVAULT="true"
 
-        KEYS_JSON="${KEYS_JSON}{\"handle\":\"$handle\",\"type\":\"$TYPE\",\"bits\":${BITS:-null},\"name_alg\":\"$NAME_ALG\",\"attributes\":[${ATTRS_JSON}],\"is_keyvault\":$IS_KEYVAULT},"
+        KEYS_JSON="${KEYS_JSON}{\"handle\":\"$handle\",\"type\":\"$TYPE\",\"bits\":${BITS:-null},\"name_alg\":\"$NAME_ALG\",\"exponent\":${EXPONENT:-null},\"scheme\":$([ -n "$SCHEME" ] && echo "\"$SCHEME\"" || echo "null"),\"has_policy\":$HAS_POLICY,\"policy_digest\":$([ -n "$POLICY_DIGEST" ] && echo "\"$POLICY_DIGEST\"" || echo "null"),\"attributes\":[${ATTRS_JSON}],\"is_keyvault\":$IS_KEYVAULT},"
     fi
 done
 KEYS_JSON=$(echo "$KEYS_JSON" | sed 's/,$//')
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Collect PCR Values (commonly used PCRs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+PCR_VALUES_JSON=""
+PCR_RAW=$(tpm2_pcrread sha256:0,1,7,14,15,16 2>/dev/null || echo "")
+if [ -n "$PCR_RAW" ]; then
+    # Parse PCR values - format is "    N : 0xHASH"
+    while IFS= read -r line; do
+        if echo "$line" | grep -qE "^\s+[0-9]+\s*:"; then
+            PCR_NUM=$(echo "$line" | sed 's/^\s*//' | cut -d: -f1 | tr -d ' ')
+            PCR_VAL=$(echo "$line" | cut -d: -f2 | tr -d ' ')
+            # Check if PCR is zero (all zeros)
+            IS_ZERO="false"
+            if echo "$PCR_VAL" | grep -qE "^0x0+$"; then
+                IS_ZERO="true"
+            fi
+            PCR_VALUES_JSON="${PCR_VALUES_JSON}{\"index\":$PCR_NUM,\"value\":\"$PCR_VAL\",\"is_zero\":$IS_ZERO},"
+        fi
+    done <<< "$PCR_RAW"
+    PCR_VALUES_JSON=$(echo "$PCR_VALUES_JSON" | sed 's/,$//')
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Collect Transient/Session Info
@@ -350,6 +387,7 @@ JSON=$(cat <<EOF
     "restart_count": $([ -n "$TPM_RESTARTS" ] && echo "$TPM_RESTARTS" || echo "null")
   },
   "persistent_keys": [${KEYS_JSON}],
+  "pcr_values": [${PCR_VALUES_JSON}],
   "sessions": {
     "transient_objects": $TRANSIENT_COUNT,
     "loaded_sessions": $SESSION_COUNT,
