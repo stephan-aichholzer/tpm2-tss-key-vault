@@ -151,7 +151,8 @@ ALGS_RAW=$(tpm2_getcap algorithms 2>/dev/null | grep -E "^\s*(rsa|ecc|aes|sha|hm
 ALGS_JSON=$(echo "$ALGS_RAW" | while read alg; do [ -n "$alg" ] && printf '"%s",' "$alg"; done | sed 's/,$//')
 
 # PCR banks
-PCR_BANKS_RAW=$(tpm2_getcap pcrs 2>/dev/null | grep "bank:" | sed 's/.*bank: //')
+# PCR banks - format is "  - sha256: [ 0, 1, ... ]"
+PCR_BANKS_RAW=$(tpm2_getcap pcrs 2>/dev/null | grep -E "^\s+-\s+\w+:" | sed 's/^\s*-\s*//' | cut -d: -f1)
 PCR_BANKS_JSON=$(echo "$PCR_BANKS_RAW" | while read bank; do [ -n "$bank" ] && printf '"%s",' "$bank"; done | sed 's/,$//')
 
 # ─────────────────────────────────────────────────────────────────────────────
