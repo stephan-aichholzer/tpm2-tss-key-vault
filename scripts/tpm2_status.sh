@@ -1,282 +1,382 @@
 #!/bin/bash
 #
-# tpm2_status.sh - Display TPM2 chip status and key inventory
+# tpm2_status.sh - Return TPM2 chip status as JSON
+#
+# Usage:
+#   ./tpm2_status.sh              # Output JSON to stdout
+#   ./tpm2_status.sh --pretty     # Pretty-printed JSON
+#   ./tpm2_status.sh --check      # Exit 0 if TPM accessible, 1 otherwise
 #
 
 set -e
 
-# Colors (optional, disable with NO_COLOR=1)
-if [ -z "$NO_COLOR" ] && [ -t 1 ]; then
-    RED='\033[0;31m'
-    GREEN='\033[0;32m'
-    YELLOW='\033[0;33m'
-    BLUE='\033[0;34m'
-    PURPLE='\033[0;35m'
-    CYAN='\033[0;36m'
-    NC='\033[0m' # No Color
-else
-    RED='' GREEN='' YELLOW='' BLUE='' PURPLE='' CYAN='' NC=''
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo ""
-echo "╔═══════════════════════════════════════════════════════════════════════════════╗"
-echo "║                            TPM2 STATUS REPORT                                 ║"
-echo "╚═══════════════════════════════════════════════════════════════════════════════╝"
-echo ""
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SECTION 1: Device Info
-# ─────────────────────────────────────────────────────────────────────────────
-echo "┌─────────────────────────────────────────────────────────────────────────────┐"
-echo "│  DEVICE INFORMATION                                                         │"
-echo "├─────────────────────────────────────────────────────────────────────────────┤"
-
-# Check device exists
-if [ -c /dev/tpm0 ]; then
-    echo -e "│  Device:        ${GREEN}/dev/tpm0${NC} (direct access)"
-else
-    echo -e "│  Device:        ${RED}/dev/tpm0 NOT FOUND${NC}"
-fi
-
-if [ -c /dev/tpmrm0 ]; then
-    echo -e "│  Resource Mgr:  ${GREEN}/dev/tpmrm0${NC} (kernel managed) ← recommended"
-else
-    echo -e "│  Resource Mgr:  ${YELLOW}/dev/tpmrm0 NOT FOUND${NC}"
-fi
-
-# Manufacturer info
-MANUFACTURER=$(tpm2_getcap properties-fixed 2>/dev/null | grep -A1 "TPM2_PT_MANUFACTURER" | tail -1 | awk '{print $2}' | xxd -r -p 2>/dev/null || echo "unknown")
-VENDOR1=$(tpm2_getcap properties-fixed 2>/dev/null | grep -A1 "TPM2_PT_VENDOR_STRING_1" | tail -1 | awk '{print $2}' | xxd -r -p 2>/dev/null || echo "")
-VENDOR2=$(tpm2_getcap properties-fixed 2>/dev/null | grep -A1 "TPM2_PT_VENDOR_STRING_2" | tail -1 | awk '{print $2}' | xxd -r -p 2>/dev/null || echo "")
-FW_V1=$(tpm2_getcap properties-fixed 2>/dev/null | grep -A1 "TPM2_PT_FIRMWARE_VERSION_1" | tail -1 | awk '{print $2}' || echo "0")
-FW_V2=$(tpm2_getcap properties-fixed 2>/dev/null | grep -A1 "TPM2_PT_FIRMWARE_VERSION_2" | tail -1 | awk '{print $2}' || echo "0")
-
-echo "│  Manufacturer:  ${MANUFACTURER}${VENDOR1}${VENDOR2}"
-
-# Firmware version (convert hex to readable)
-if [ -n "$FW_V1" ] && [ "$FW_V1" != "0" ]; then
-    # Remove 0x prefix if present, handle parsing errors gracefully
-    FW_V1_CLEAN=$(echo "$FW_V1" | sed 's/^0x//')
-    FW_MAJOR=$(printf "%d" $((16#${FW_V1_CLEAN:0:4})) 2>/dev/null || echo "?")
-    FW_MINOR=$(printf "%d" $((16#${FW_V1_CLEAN:4:4})) 2>/dev/null || echo "?")
-    echo "│  Firmware:      ${FW_MAJOR}.${FW_MINOR}"
-fi
-
-# TPM Type (discrete vs firmware)
-if [ -f /sys/class/tpm/tpm0/device/description ]; then
-    TPM_DESC=$(cat /sys/class/tpm/tpm0/device/description 2>/dev/null || echo "unknown")
-    echo "│  Description:   ${TPM_DESC}"
-fi
-
-# Bus type
-if [ -d /sys/class/tpm/tpm0/device ]; then
-    BUS_PATH=$(readlink -f /sys/class/tpm/tpm0/device 2>/dev/null || echo "")
-    if echo "$BUS_PATH" | grep -q "spi"; then
-        echo -e "│  Bus:           ${YELLOW}SPI${NC} (physical bus - use encrypted sessions!)"
-    elif echo "$BUS_PATH" | grep -q "i2c"; then
-        echo -e "│  Bus:           ${YELLOW}I2C${NC} (physical bus - use encrypted sessions!)"
-    elif echo "$BUS_PATH" | grep -q "MSFT"; then
-        echo -e "│  Bus:           ${GREEN}Firmware TPM (fTPM)${NC} - internal to CPU"
-    elif echo "$BUS_PATH" | grep -q "PNP"; then
-        echo -e "│  Bus:           ${CYAN}LPC${NC} (Low Pin Count)"
-    else
-        echo "│  Bus:           $(basename $(dirname $BUS_PATH) 2>/dev/null || echo 'unknown')"
-    fi
-fi
-
-echo "└─────────────────────────────────────────────────────────────────────────────┘"
-echo ""
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SECTION 2: Capabilities
-# ─────────────────────────────────────────────────────────────────────────────
-echo "┌─────────────────────────────────────────────────────────────────────────────┐"
-echo "│  CAPABILITIES                                                               │"
-echo "├─────────────────────────────────────────────────────────────────────────────┤"
-
-# Supported algorithms
-ALGS=$(tpm2_getcap algorithms 2>/dev/null | grep -E "^\s*(rsa|ecc|aes|sha)" | awk '{print $1}' | tr '\n' ' ' | head -c 60)
-echo "│  Algorithms:    ${ALGS:-unknown}"
-
-# Max RSA key size
-MAX_RSA=$(tpm2_getcap properties-fixed 2>/dev/null | grep -A1 "TPM2_PT_MAX_RSA_KEY_BYTES" | tail -1 | awk '{print $2}')
-if [ -n "$MAX_RSA" ]; then
-    MAX_RSA_BITS=$((0x$MAX_RSA * 8))
-    echo "│  Max RSA:       ${MAX_RSA_BITS} bits"
-fi
-
-# PCR banks
-PCR_BANKS=$(tpm2_getcap pcrs 2>/dev/null | grep "bank" | sed 's/.*bank: //' | tr '\n' ' ')
-echo "│  PCR Banks:     ${PCR_BANKS:-unknown}"
-
-echo "└─────────────────────────────────────────────────────────────────────────────┘"
-echo ""
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SECTION 3: Persistent Keys
-# ─────────────────────────────────────────────────────────────────────────────
-echo "┌─────────────────────────────────────────────────────────────────────────────┐"
-echo "│  PERSISTENT KEYS (NV Storage)                                               │"
-echo "├─────────────────────────────────────────────────────────────────────────────┤"
-
-HANDLES=$(tpm2_getcap handles-persistent 2>/dev/null | grep "0x" | tr -d ' -')
-
-if [ -z "$HANDLES" ]; then
-    echo "│  (no persistent keys found)                                                 │"
-else
-    printf "│  %-14s │ %-7s │ %-10s │ %-26s │\n" "Handle" "Type" "Bits" "Attributes"
-    echo "│  ────────────────────────────────────────────────────────────────────────── │"
-
-    for handle in $HANDLES; do
-        INFO=$(tpm2_readpublic -c $handle 2>/dev/null)
-        TYPE=$(echo "$INFO" | grep -A1 "^type:" | tail -1 | sed 's/.*value: //')
-        BITS=$(echo "$INFO" | grep "^bits:" | awk '{print $2}')
-        ATTRS=$(echo "$INFO" | grep -A1 "^attributes:" | tail -1 | sed 's/.*value: //' | cut -c1-26)
-
-        if [ "$handle" = "0x81010002" ]; then
-            printf "│  ${GREEN}%-14s${NC} │ %-7s │ %-10s │ %-26s │ ${CYAN}← KeyVault${NC}\n" "$handle" "$TYPE" "$BITS" "$ATTRS"
-        else
-            printf "│  %-14s │ %-7s │ %-10s │ %-26s │\n" "$handle" "$TYPE" "$BITS" "$ATTRS"
-        fi
-    done
-fi
-
-echo "└─────────────────────────────────────────────────────────────────────────────┘"
-echo ""
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SECTION 4: Transient Objects
-# ─────────────────────────────────────────────────────────────────────────────
-echo "┌─────────────────────────────────────────────────────────────────────────────┐"
-echo "│  TRANSIENT OBJECTS (Session Memory)                                         │"
-echo "├─────────────────────────────────────────────────────────────────────────────┤"
-
-TRANSIENT=$(tpm2_getcap handles-transient 2>/dev/null | grep "0x" | wc -l)
-SESSIONS=$(tpm2_getcap handles-loaded-session 2>/dev/null | grep "0x" | wc -l)
-SAVED_SESSIONS=$(tpm2_getcap handles-saved-session 2>/dev/null | grep "0x" | wc -l)
-
-echo "│  Loaded keys:      ${TRANSIENT}"
-echo "│  Active sessions:  ${SESSIONS}"
-echo "│  Saved sessions:   ${SAVED_SESSIONS}"
-
-echo "└─────────────────────────────────────────────────────────────────────────────┘"
-echo ""
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SECTION 5: Local Key Files
-# ─────────────────────────────────────────────────────────────────────────────
-if [ -d "keys" ]; then
-    echo "┌─────────────────────────────────────────────────────────────────────────────┐"
-    echo "│  LOCAL KEY FILES (./keys/)                                                  │"
-    echo "├─────────────────────────────────────────────────────────────────────────────┤"
-
-    for f in keys/*; do
-        if [ -f "$f" ]; then
-            SIZE=$(stat --format=%s "$f" 2>/dev/null || echo "?")
-            NAME=$(basename "$f")
-            PERMS=$(stat --format=%a "$f" 2>/dev/null || echo "???")
-
-            # Color based on file type
-            case "$NAME" in
-                *.pem)
-                    printf "│    %-28s %8s bytes  [%s]  ${GREEN}public key${NC}\n" "$NAME" "$SIZE" "$PERMS"
-                    ;;
-                *.ctx)
-                    printf "│    %-28s %8s bytes  [%s]  ${PURPLE}context${NC}\n" "$NAME" "$SIZE" "$PERMS"
-                    ;;
-                *.priv)
-                    printf "│    %-28s %8s bytes  [%s]  ${YELLOW}encrypted private${NC}\n" "$NAME" "$SIZE" "$PERMS"
-                    ;;
-                *.pub)
-                    printf "│    %-28s %8s bytes  [%s]  ${CYAN}TPM public${NC}\n" "$NAME" "$SIZE" "$PERMS"
-                    ;;
-                *)
-                    printf "│    %-28s %8s bytes  [%s]\n" "$NAME" "$SIZE" "$PERMS"
-                    ;;
-            esac
-        fi
-    done
-
-    echo "└─────────────────────────────────────────────────────────────────────────────┘"
-    echo ""
-fi
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SECTION 6: Quick Health Check
-# ─────────────────────────────────────────────────────────────────────────────
-echo "┌─────────────────────────────────────────────────────────────────────────────┐"
-echo "│  HEALTH CHECK                                                               │"
-echo "├─────────────────────────────────────────────────────────────────────────────┤"
-
-# Test random number generation
-if RANDOM_HEX=$(tpm2_getrandom 8 --hex 2>/dev/null); then
-    echo -e "│  RNG Test:      ${GREEN}OK${NC} (got: ${RANDOM_HEX})"
-else
-    echo -e "│  RNG Test:      ${RED}FAILED${NC}"
-fi
-
-# Check if our key exists
-if tpm2_readpublic -c 0x81010002 &>/dev/null; then
-    echo -e "│  KeyVault Key:  ${GREEN}OK${NC} (0x81010002 exists)"
-else
-    echo -e "│  KeyVault Key:  ${YELLOW}NOT FOUND${NC} (run: bash init.sh)"
-fi
-
-# Check user permissions
-if [ -r /dev/tpmrm0 ] && [ -w /dev/tpmrm0 ]; then
-    echo -e "│  Permissions:   ${GREEN}OK${NC} (read/write access to /dev/tpmrm0)"
-else
-    echo -e "│  Permissions:   ${RED}DENIED${NC} (add user to 'tss' group)"
-fi
-
-# Check if tpm2-abrmd is running (optional)
-if systemctl is-active tpm2-abrmd &>/dev/null; then
-    echo -e "│  tpm2-abrmd:    ${CYAN}RUNNING${NC} (user-space resource manager)"
-else
-    echo -e "│  tpm2-abrmd:    ${NC}not running (using kernel RM - OK)"
-fi
-
-echo "└─────────────────────────────────────────────────────────────────────────────┘"
-echo ""
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SECTION 7: ASCII Diagram
-# ─────────────────────────────────────────────────────────────────────────────
-echo "┌─────────────────────────────────────────────────────────────────────────────┐"
-echo "│  TPM KEY HIERARCHY                                                          │"
-echo "├─────────────────────────────────────────────────────────────────────────────┤"
-echo "│                                                                             │"
-echo "│      ┌─────────────────────────────────────────────────────────┐            │"
-echo "│      │              TPM2 CHIP (Silicon)                        │            │"
-echo "│      │                                                         │            │"
-echo "│      │   ┌─────────────────────────────────────────────────┐   │            │"
-echo "│      │   │        SEED (burned in manufacturing)           │   │            │"
-echo "│      │   └─────────────────────┬───────────────────────────┘   │            │"
-echo "│      │                         │                               │            │"
-echo "│      │           ┌─────────────┼─────────────┐                 │            │"
-echo "│      │           ▼             ▼             ▼                 │            │"
-echo "│      │      ┌────────┐   ┌──────────┐   ┌──────────┐           │            │"
-echo "│      │      │ OWNER  │   │ENDORSEMT │   │ PLATFORM │           │            │"
-echo "│      │      └───┬────┘   └────┬─────┘   └──────────┘           │            │"
-echo "│      │          │             │                                │            │"
-echo "│      │          ▼             ▼                                │            │"
-echo "│      │     ┌─────────┐  ┌──────────┐                           │            │"
-echo "│      │     │ Primary │  │    EK    │ ← session salting         │            │"
-echo "│      │     └────┬────┘  └──────────┘                           │            │"
-echo "│      │          │                                              │            │"
-echo "│      │          ▼            NV STORAGE                        │            │"
-echo "│      │   ╔════════════════════════════════════════════╗        │            │"
-
-# Show persistent handles in diagram
-for handle in $HANDLES; do
-    if [ "$handle" = "0x81010002" ]; then
-        echo "│      │   ║  ${handle}  RSA-2048 (KeyVault)     ║        │            │"
-    fi
+# Parse arguments
+PRETTY=false
+CHECK_ONLY=false
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --pretty|-p)
+            PRETTY=true
+            shift
+            ;;
+        --check|-c)
+            CHECK_ONLY=true
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --pretty, -p    Pretty-print JSON output"
+            echo "  --check, -c     Exit 0 if TPM accessible, 1 otherwise"
+            echo "  --help, -h      Show this help"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            exit 1
+            ;;
+    esac
 done
 
-echo "│      │   ╚════════════════════════════════════════════╝        │            │"
-echo "│      │                                                         │            │"
-echo "│      └─────────────────────────────────────────────────────────┘            │"
-echo "│                                                                             │"
-echo "└─────────────────────────────────────────────────────────────────────────────┘"
-echo ""
+# Quick check mode
+if [ "$CHECK_ONLY" = true ]; then
+    if tpm2_getrandom 1 &>/dev/null; then
+        exit 0
+    else
+        exit 1
+    fi
+fi
+
+# Helper: escape string for JSON
+json_escape() {
+    printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()), end="")' 2>/dev/null || \
+    printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\n/\\n/g')"
+}
+
+# Helper: safe command execution, returns empty string on failure
+safe_cmd() {
+    "$@" 2>/dev/null || echo ""
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Collect Device Information
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEVICE_TPM0="false"
+DEVICE_TPMRM0="false"
+[ -c /dev/tpm0 ] && DEVICE_TPM0="true"
+[ -c /dev/tpmrm0 ] && DEVICE_TPMRM0="true"
+
+# Manufacturer info from properties-fixed
+PROPS_FIXED=$(tpm2_getcap properties-fixed 2>/dev/null || echo "")
+
+get_prop() {
+    echo "$PROPS_FIXED" | grep -A1 "$1" | tail -1 | awk '{print $2}'
+}
+
+get_prop_string() {
+    local val=$(get_prop "$1")
+    [ -n "$val" ] && echo "$val" | xxd -r -p 2>/dev/null || echo ""
+}
+
+MANUFACTURER=$(get_prop_string "TPM2_PT_MANUFACTURER")
+VENDOR_STRING="${MANUFACTURER}$(get_prop_string TPM2_PT_VENDOR_STRING_1)$(get_prop_string TPM2_PT_VENDOR_STRING_2)$(get_prop_string TPM2_PT_VENDOR_STRING_3)$(get_prop_string TPM2_PT_VENDOR_STRING_4)"
+
+# Firmware version
+FW_V1=$(get_prop "TPM2_PT_FIRMWARE_VERSION_1")
+FW_V2=$(get_prop "TPM2_PT_FIRMWARE_VERSION_2")
+FW_VERSION=""
+if [ -n "$FW_V1" ] && [ "$FW_V1" != "0" ]; then
+    FW_V1_CLEAN=$(echo "$FW_V1" | sed 's/^0x//')
+    FW_MAJOR=$(printf "%d" $((16#${FW_V1_CLEAN:0:4})) 2>/dev/null || echo "0")
+    FW_MINOR=$(printf "%d" $((16#${FW_V1_CLEAN:4:4})) 2>/dev/null || echo "0")
+    FW_VERSION="${FW_MAJOR}.${FW_MINOR}"
+fi
+
+# Spec version
+SPEC_FAMILY=$(get_prop "TPM2_PT_FAMILY_INDICATOR")
+SPEC_LEVEL=$(get_prop "TPM2_PT_LEVEL")
+SPEC_REV=$(get_prop "TPM2_PT_REVISION")
+SPEC_VERSION=""
+if [ -n "$SPEC_REV" ]; then
+    SPEC_REV_DEC=$((SPEC_REV))
+    SPEC_VERSION="$((SPEC_REV_DEC / 100)).$((SPEC_REV_DEC % 100))"
+fi
+
+# Year/day of manufacture (convert hex to decimal)
+YEAR_HEX=$(get_prop "TPM2_PT_YEAR")
+DAY_HEX=$(get_prop "TPM2_PT_DAY_OF_YEAR")
+YEAR=""
+DAY=""
+[ -n "$YEAR_HEX" ] && YEAR=$((YEAR_HEX))
+[ -n "$DAY_HEX" ] && DAY=$((DAY_HEX))
+
+# Bus type detection
+BUS_TYPE="unknown"
+if [ -d /sys/class/tpm/tpm0/device ]; then
+    BUS_PATH=$(readlink -f /sys/class/tpm/tpm0/device 2>/dev/null || echo "")
+    if echo "$BUS_PATH" | grep -qi "spi"; then
+        BUS_TYPE="spi"
+    elif echo "$BUS_PATH" | grep -qi "i2c"; then
+        BUS_TYPE="i2c"
+    elif echo "$BUS_PATH" | grep -qi "MSFT"; then
+        BUS_TYPE="ftpm"
+    elif echo "$BUS_PATH" | grep -qi "PNP"; then
+        BUS_TYPE="lpc"
+    fi
+fi
+
+# Description from sysfs
+TPM_DESC=""
+[ -f /sys/class/tpm/tpm0/device/description ] && TPM_DESC=$(cat /sys/class/tpm/tpm0/device/description 2>/dev/null || echo "")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Collect Capabilities
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Max key sizes
+MAX_RSA_BYTES=$(get_prop "TPM2_PT_MAX_RSA_KEY_BYTES")
+MAX_RSA_BITS=""
+[ -n "$MAX_RSA_BYTES" ] && MAX_RSA_BITS=$((0x$MAX_RSA_BYTES * 8))
+
+MAX_ECC=$(get_prop "TPM2_PT_MAX_ECC_KEY_BYTES")
+MAX_ECC_BITS=""
+[ -n "$MAX_ECC" ] && MAX_ECC_BITS=$((0x$MAX_ECC * 8))
+
+# Algorithms (remove trailing colons)
+ALGS_RAW=$(tpm2_getcap algorithms 2>/dev/null | grep -E "^\s*(rsa|ecc|aes|sha|hmac|mgf1|kdf|oaep|ecdsa|ecdh|ecmqv|sm|camellia|cmac|cbc|cfb|ecb|ofb|ctr|xor)" | awk '{print $1}' | sed 's/:$//' | sort -u)
+ALGS_JSON=$(echo "$ALGS_RAW" | while read alg; do [ -n "$alg" ] && printf '"%s",' "$alg"; done | sed 's/,$//')
+
+# PCR banks
+PCR_BANKS_RAW=$(tpm2_getcap pcrs 2>/dev/null | grep "bank:" | sed 's/.*bank: //')
+PCR_BANKS_JSON=$(echo "$PCR_BANKS_RAW" | while read bank; do [ -n "$bank" ] && printf '"%s",' "$bank"; done | sed 's/,$//')
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Collect Ownership/Authorization Status
+# ─────────────────────────────────────────────────────────────────────────────
+
+PROPS_VAR=$(tpm2_getcap properties-variable 2>/dev/null || echo "")
+
+get_var_prop() {
+    echo "$PROPS_VAR" | grep -A1 "$1" | tail -1 | awk '{print $2}'
+}
+
+OWNER_AUTH_SET=$(get_var_prop "TPM2_PT_PERSISTENT" | grep -q "ownerAuthSet" && echo "true" || echo "false")
+# Check individual auth flags
+OWNER_AUTH=$(echo "$PROPS_VAR" | grep -A5 "TPM2_PT_PERSISTENT" | grep -q "ownerAuthSet" && echo "true" || echo "false")
+ENDORSEMENT_AUTH=$(echo "$PROPS_VAR" | grep -A5 "TPM2_PT_PERSISTENT" | grep -q "endorsementAuthSet" && echo "true" || echo "false")
+LOCKOUT_AUTH=$(echo "$PROPS_VAR" | grep -A5 "TPM2_PT_PERSISTENT" | grep -q "lockoutAuthSet" && echo "true" || echo "false")
+
+# Lockout status (convert hex to decimal)
+LOCKOUT_COUNTER_HEX=$(get_var_prop "TPM2_PT_LOCKOUT_COUNTER")
+MAX_AUTH_FAIL_HEX=$(get_var_prop "TPM2_PT_MAX_AUTH_FAIL")
+LOCKOUT_INTERVAL_HEX=$(get_var_prop "TPM2_PT_LOCKOUT_INTERVAL")
+LOCKOUT_RECOVERY_HEX=$(get_var_prop "TPM2_PT_LOCKOUT_RECOVERY")
+
+LOCKOUT_COUNTER=0
+MAX_AUTH_FAIL=""
+LOCKOUT_INTERVAL=""
+LOCKOUT_RECOVERY=""
+[ -n "$LOCKOUT_COUNTER_HEX" ] && LOCKOUT_COUNTER=$((LOCKOUT_COUNTER_HEX))
+[ -n "$MAX_AUTH_FAIL_HEX" ] && MAX_AUTH_FAIL=$((MAX_AUTH_FAIL_HEX))
+[ -n "$LOCKOUT_INTERVAL_HEX" ] && LOCKOUT_INTERVAL=$((LOCKOUT_INTERVAL_HEX))
+[ -n "$LOCKOUT_RECOVERY_HEX" ] && LOCKOUT_RECOVERY=$((LOCKOUT_RECOVERY_HEX))
+
+# In lockout?
+IN_LOCKOUT="false"
+[ "$LOCKOUT_COUNTER" -gt 0 ] 2>/dev/null && IN_LOCKOUT="true"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Collect Clock/Uptime Info
+# ─────────────────────────────────────────────────────────────────────────────
+
+CLOCK_INFO=$(tpm2_readclock 2>/dev/null || echo "")
+TPM_TIME=""
+TPM_CLOCK=""
+TPM_RESETS=""
+TPM_RESTARTS=""
+if [ -n "$CLOCK_INFO" ]; then
+    TPM_TIME=$(echo "$CLOCK_INFO" | grep "time:" | awk '{print $2}')
+    TPM_CLOCK=$(echo "$CLOCK_INFO" | grep "clock:" | awk '{print $2}')
+    TPM_RESETS=$(echo "$CLOCK_INFO" | grep "reset_count:" | awk '{print $2}')
+    TPM_RESTARTS=$(echo "$CLOCK_INFO" | grep "restart_count:" | awk '{print $2}')
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Collect Persistent Keys
+# ─────────────────────────────────────────────────────────────────────────────
+
+HANDLES_RAW=$(tpm2_getcap handles-persistent 2>/dev/null | grep "0x" | tr -d ' -')
+KEYS_JSON=""
+
+for handle in $HANDLES_RAW; do
+    INFO=$(tpm2_readpublic -c $handle 2>/dev/null || echo "")
+    if [ -n "$INFO" ]; then
+        TYPE=$(echo "$INFO" | grep "^type:" | awk '{print $2}')
+        BITS=$(echo "$INFO" | grep "^bits:" | awk '{print $2}')
+        NAME_ALG=$(echo "$INFO" | grep "^name-alg:" | awk '{print $2}')
+        ATTRS=$(echo "$INFO" | grep -A1 "^attributes:" | tail -1 | sed 's/.*value: //')
+
+        # Parse attributes into array
+        ATTRS_JSON=$(echo "$ATTRS" | tr '|' '\n' | while read attr; do
+            [ -n "$attr" ] && printf '"%s",' "$attr"
+        done | sed 's/,$//')
+
+        IS_KEYVAULT="false"
+        [ "$handle" = "0x81010002" ] && IS_KEYVAULT="true"
+
+        KEYS_JSON="${KEYS_JSON}{\"handle\":\"$handle\",\"type\":\"$TYPE\",\"bits\":${BITS:-null},\"name_alg\":\"$NAME_ALG\",\"attributes\":[${ATTRS_JSON}],\"is_keyvault\":$IS_KEYVAULT},"
+    fi
+done
+KEYS_JSON=$(echo "$KEYS_JSON" | sed 's/,$//')
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Collect Transient/Session Info
+# ─────────────────────────────────────────────────────────────────────────────
+
+TRANSIENT_COUNT=$(tpm2_getcap handles-transient 2>/dev/null | grep -c "0x") || TRANSIENT_COUNT=0
+SESSION_COUNT=$(tpm2_getcap handles-loaded-session 2>/dev/null | grep -c "0x") || SESSION_COUNT=0
+SAVED_SESSION_COUNT=$(tpm2_getcap handles-saved-session 2>/dev/null | grep -c "0x") || SAVED_SESSION_COUNT=0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Collect Local Key Files
+# ─────────────────────────────────────────────────────────────────────────────
+
+FILES_JSON=""
+if [ -d "keys" ]; then
+    for f in keys/*; do
+        if [ -f "$f" ]; then
+            NAME=$(basename "$f")
+            SIZE=$(stat --format=%s "$f" 2>/dev/null || echo "0")
+            PERMS=$(stat --format=%a "$f" 2>/dev/null || echo "000")
+            MODIFIED=$(stat --format=%Y "$f" 2>/dev/null || echo "0")
+
+            # Determine file type
+            FTYPE="unknown"
+            case "$NAME" in
+                *.pem) FTYPE="public_key" ;;
+                *.ctx) FTYPE="context" ;;
+                *.priv) FTYPE="encrypted_private" ;;
+                *.pub) FTYPE="tpm_public" ;;
+                pcr_policy) FTYPE="pcr_config" ;;
+                pcr_value) FTYPE="pcr_value" ;;
+            esac
+
+            FILES_JSON="${FILES_JSON}{\"name\":\"$NAME\",\"size\":$SIZE,\"permissions\":\"$PERMS\",\"modified\":$MODIFIED,\"type\":\"$FTYPE\"},"
+        fi
+    done
+    FILES_JSON=$(echo "$FILES_JSON" | sed 's/,$//')
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Collect PCR Policy Config
+# ─────────────────────────────────────────────────────────────────────────────
+
+PCR_POLICY_INDEX=""
+PCR_POLICY_VALUE=""
+if [ -f "keys/pcr_policy" ]; then
+    PCR_POLICY_INDEX=$(cat keys/pcr_policy 2>/dev/null || echo "")
+fi
+if [ -f "keys/pcr_value" ]; then
+    PCR_POLICY_VALUE=$(cat keys/pcr_value 2>/dev/null || echo "")
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Health Checks
+# ─────────────────────────────────────────────────────────────────────────────
+
+RNG_OK="false"
+RNG_SAMPLE=""
+if RANDOM_HEX=$(tpm2_getrandom 8 --hex 2>/dev/null); then
+    RNG_OK="true"
+    RNG_SAMPLE="$RANDOM_HEX"
+fi
+
+KEYVAULT_OK="false"
+tpm2_readpublic -c 0x81010002 &>/dev/null && KEYVAULT_OK="true"
+
+PERMISSIONS_OK="false"
+[ -r /dev/tpmrm0 ] && [ -w /dev/tpmrm0 ] && PERMISSIONS_OK="true"
+
+ABRMD_RUNNING="false"
+systemctl is-active tpm2-abrmd &>/dev/null && ABRMD_RUNNING="true"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Build JSON Output
+# ─────────────────────────────────────────────────────────────────────────────
+
+JSON=$(cat <<EOF
+{
+  "timestamp": $(date +%s),
+  "device": {
+    "tpm0_available": $DEVICE_TPM0,
+    "tpmrm0_available": $DEVICE_TPMRM0,
+    "bus_type": "$BUS_TYPE",
+    "description": $(json_escape "$TPM_DESC")
+  },
+  "info": {
+    "manufacturer": $(json_escape "$MANUFACTURER"),
+    "vendor_string": $(json_escape "$VENDOR_STRING"),
+    "firmware_version": $([ -n "$FW_VERSION" ] && echo "\"$FW_VERSION\"" || echo "null"),
+    "spec_version": $([ -n "$SPEC_VERSION" ] && echo "\"$SPEC_VERSION\"" || echo "null"),
+    "spec_level": $([ -n "$SPEC_LEVEL" ] && echo "$SPEC_LEVEL" || echo "null"),
+    "manufacture_year": $([ -n "$YEAR" ] && echo "$YEAR" || echo "null"),
+    "manufacture_day": $([ -n "$DAY" ] && echo "$DAY" || echo "null")
+  },
+  "capabilities": {
+    "max_rsa_bits": $([ -n "$MAX_RSA_BITS" ] && echo "$MAX_RSA_BITS" || echo "null"),
+    "max_ecc_bits": $([ -n "$MAX_ECC_BITS" ] && echo "$MAX_ECC_BITS" || echo "null"),
+    "algorithms": [${ALGS_JSON}],
+    "pcr_banks": [${PCR_BANKS_JSON}]
+  },
+  "authorization": {
+    "owner_auth_set": $OWNER_AUTH,
+    "endorsement_auth_set": $ENDORSEMENT_AUTH,
+    "lockout_auth_set": $LOCKOUT_AUTH,
+    "in_lockout": $IN_LOCKOUT,
+    "lockout_counter": ${LOCKOUT_COUNTER:-0},
+    "max_auth_failures": $([ -n "$MAX_AUTH_FAIL" ] && echo "$MAX_AUTH_FAIL" || echo "null"),
+    "lockout_interval_seconds": $([ -n "$LOCKOUT_INTERVAL" ] && echo "$LOCKOUT_INTERVAL" || echo "null"),
+    "lockout_recovery_seconds": $([ -n "$LOCKOUT_RECOVERY" ] && echo "$LOCKOUT_RECOVERY" || echo "null")
+  },
+  "clock": {
+    "uptime_ms": $([ -n "$TPM_TIME" ] && echo "$TPM_TIME" || echo "null"),
+    "clock_ms": $([ -n "$TPM_CLOCK" ] && echo "$TPM_CLOCK" || echo "null"),
+    "reset_count": $([ -n "$TPM_RESETS" ] && echo "$TPM_RESETS" || echo "null"),
+    "restart_count": $([ -n "$TPM_RESTARTS" ] && echo "$TPM_RESTARTS" || echo "null")
+  },
+  "persistent_keys": [${KEYS_JSON}],
+  "sessions": {
+    "transient_objects": $TRANSIENT_COUNT,
+    "loaded_sessions": $SESSION_COUNT,
+    "saved_sessions": $SAVED_SESSION_COUNT
+  },
+  "keyvault": {
+    "key_provisioned": $KEYVAULT_OK,
+    "key_handle": "0x81010002",
+    "pcr_policy_enabled": $([ -n "$PCR_POLICY_INDEX" ] && echo "true" || echo "false"),
+    "pcr_policy_index": $([ -n "$PCR_POLICY_INDEX" ] && echo "$PCR_POLICY_INDEX" || echo "null"),
+    "pcr_policy_value": $([ -n "$PCR_POLICY_VALUE" ] && json_escape "$PCR_POLICY_VALUE" || echo "null"),
+    "local_files": [${FILES_JSON}]
+  },
+  "health": {
+    "rng_working": $RNG_OK,
+    "rng_sample": $([ -n "$RNG_SAMPLE" ] && echo "\"$RNG_SAMPLE\"" || echo "null"),
+    "keyvault_accessible": $KEYVAULT_OK,
+    "device_permissions_ok": $PERMISSIONS_OK,
+    "abrmd_running": $ABRMD_RUNNING
+  }
+}
+EOF
+)
+
+# Output
+if [ "$PRETTY" = true ]; then
+    echo "$JSON" | python3 -m json.tool 2>/dev/null || echo "$JSON"
+else
+    # Compact: remove extra whitespace
+    echo "$JSON" | tr -d '\n' | sed 's/  */ /g'
+fi
